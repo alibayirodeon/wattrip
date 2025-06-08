@@ -6,6 +6,7 @@ import LocationScreen from './src/screens/LocationScreen';
 import SearchLocationScreen from './src/screens/SearchLocationScreen';
 import MapSelectionScreen from './src/screens/MapSelectionScreen';
 import RouteDetailScreen from './src/screens/RouteDetailScreen';
+import ErrorBoundary from './src/components/ErrorBoundary';
 import { RootStackParamList } from './src/navigation/types';
 import * as Location from 'expo-location';
 import { useEffect } from 'react';
@@ -16,31 +17,61 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export default function App() {
   const setLastKnownLocation = useLocationStore(s => s.setLastKnownLocation);
+  
   useEffect(() => {
-    (async () => {
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Konum izni reddedildi', 'Konum tabanlı özellikler çalışmayabilir.');
-        return;
+    const initializeLocation = async () => {
+      try {
+        let { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Konum izni reddedildi', 'Konum tabanlı özellikler çalışmayabilir.');
+          return;
+        }
+        
+        let location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        
+        setLastKnownLocation({
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+        });
+      } catch (error) {
+        console.warn('Location initialization failed:', error);
+        // Don't show alert for location errors during startup
       }
-      let location = await Location.getCurrentPositionAsync({});
-      setLastKnownLocation({
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-      });
-    })();
-  }, []);
+    };
+    
+    initializeLocation();
+  }, [setLastKnownLocation]);
 
   return (
-    <PaperProvider>
-      <NavigationContainer>
-        <Stack.Navigator initialRouteName="Location">
-          <Stack.Screen name="Location" component={LocationScreen} options={{ title: 'Rota Planla' }} />
-          <Stack.Screen name="SearchLocation" component={SearchLocationScreen} options={{ title: '', headerShown: false }} />
-          <Stack.Screen name="MapSelection" component={MapSelectionScreen} options={{ title: 'Haritadan Seç', headerShown: true }} />
-          <Stack.Screen name="RouteDetail" component={RouteDetailScreen} options={{ title: 'Rota Detayı' }} />
-        </Stack.Navigator>
-      </NavigationContainer>
-    </PaperProvider>
+    <ErrorBoundary>
+      <PaperProvider>
+        <NavigationContainer>
+          <Stack.Navigator initialRouteName="Location">
+            <Stack.Screen 
+              name="Location" 
+              component={LocationScreen} 
+              options={{ title: 'Rota Planla' }} 
+            />
+            <Stack.Screen 
+              name="SearchLocation" 
+              component={SearchLocationScreen} 
+              options={{ title: '', headerShown: false }} 
+            />
+            <Stack.Screen 
+              name="MapSelection" 
+              component={MapSelectionScreen} 
+              options={{ title: 'Haritadan Seç', headerShown: false }} 
+            />
+            <Stack.Screen 
+              name="RouteDetail" 
+              component={RouteDetailScreen} 
+              options={{ title: 'Rota Detayı' }} 
+            />
+          </Stack.Navigator>
+        </NavigationContainer>
+      </PaperProvider>
+    </ErrorBoundary>
   );
 }

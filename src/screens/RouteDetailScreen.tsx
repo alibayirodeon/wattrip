@@ -5,9 +5,10 @@ import MapView, { Polyline, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { useLocationStore } from '../context/useLocationStore';
 import { useNavigation } from '@react-navigation/native';
+import { ENV } from '../config/env';
 import axios from 'axios';
 
-const GOOGLE_API_KEY = 'AIzaSyC1RCUy97Gu_yFZuCSi9lFP2Utv3pm75Mc';
+// Google API key is now imported from ENV config
 
 function decodePolyline(encoded: any) {
   let points = [];
@@ -59,9 +60,9 @@ export default function RouteDetailScreen() {
     const durationMinutes = durationInSeconds / 60;
     
     // Peugeot e-2008 için örnek değerler
-    const energyConsumption = distanceKm * 0.17; // kWh/km
-    const estimatedCost = energyConsumption * 3.5; // TL (örnek elektrik fiyatı)
-    const batteryRange = 320; // km
+    const energyConsumption = distanceKm * ENV.DEFAULT_ENERGY_CONSUMPTION; // kWh/km
+    const estimatedCost = energyConsumption * ENV.DEFAULT_ELECTRICITY_PRICE; // TL
+    const batteryRange = ENV.DEFAULT_BATTERY_RANGE; // km
     const chargingStopsNeeded = Math.max(0, Math.ceil(distanceKm / batteryRange) - 1);
     
     return {
@@ -83,7 +84,7 @@ export default function RouteDetailScreen() {
       
       setLoading(true);
       try {
-        const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${fromCoord[0]},${fromCoord[1]}&destination=${toCoord[0]},${toCoord[1]}&key=${GOOGLE_API_KEY}&mode=driving`;
+        const url = `${ENV.GOOGLE_DIRECTIONS_API_URL}?origin=${fromCoord[0]},${fromCoord[1]}&destination=${toCoord[0]},${toCoord[1]}&key=${ENV.GOOGLE_MAPS_API_KEY}&mode=driving`;
         const response = await axios.get(url);
         
         if (!response.data.routes.length) {
