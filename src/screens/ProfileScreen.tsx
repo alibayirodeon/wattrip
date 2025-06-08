@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { View, ScrollView, FlatList, StyleSheet, Alert } from 'react-native';
+import { View, ScrollView, FlatList, StyleSheet, Alert, TouchableOpacity } from 'react-native';
 import { Text, Card, Button, Divider, Avatar, Chip, FAB } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useVehicleStore, Vehicle, getVehicleDisplayName } from '../context/useVehicleStore';
+import { useVehicleStore, Vehicle, getVehicleDisplayName, formatSocketType } from '../context/useVehicleStore';
 import VehicleCard from '../components/VehicleCard';
 import AddVehicleModal from '../components/AddVehicleModal';
 
@@ -93,152 +93,100 @@ const ProfileScreen: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {/* Header Section */}
+        {/* Header Section - ChargIQ Style */}
         <View style={styles.header}>
+          <View style={styles.headerTop}>
+            <Text style={styles.appTitle}>WatTrip</Text>
+            <TouchableOpacity style={styles.settingsButton}>
+              <Text style={styles.settingsIcon}>⚙️</Text>
+            </TouchableOpacity>
+          </View>
+          
           <View style={styles.profileInfo}>
             <Avatar.Text
-              size={56}
-              label="WU"
+              size={80}
+              label="AB"
               style={styles.avatar}
               labelStyle={styles.avatarText}
             />
-            <View style={styles.greeting}>
-              <Text style={styles.greetingText}>{getGreeting()}</Text>
-              <Text style={styles.userName}>WatTrip Kullanıcısı</Text>
-            </View>
-          </View>
-          
-          <View style={styles.statsContainer}>
-            <View style={styles.statItem}>
-              <Text style={styles.statValue}>{vehicles.length}</Text>
-              <Text style={styles.statLabel}>Kayıtlı Araç</Text>
-            </View>
-            <View style={styles.statSeparator} />
-            <View style={styles.statItem}>
-              <Text style={styles.statValue}>⚡</Text>
-              <Text style={styles.statLabel}>Elektrikli</Text>
-            </View>
+            <Text style={styles.userName}>Ali Bayır</Text>
           </View>
         </View>
 
-        {/* Selected Vehicle Section */}
-        {selectedVehicle && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Aktif Araç</Text>
-            <Card style={styles.selectedVehicleCard}>
-              <Card.Content style={styles.selectedVehicleContent}>
-                <View style={styles.selectedVehicleHeader}>
-                  <View>
-                    <Text style={styles.selectedVehicleBrand}>
-                      {selectedVehicle.brand}
-                    </Text>
-                    <Text style={styles.selectedVehicleModel}>
-                      {selectedVehicle.model}
-                    </Text>
-                    <Text style={styles.selectedVehiclePlate}>
-                      {selectedVehicle.plate}
-                    </Text>
-                  </View>
-                  <Chip
-                    mode="flat"
-                    style={styles.activeChip}
-                    textStyle={styles.activeChipText}
-                  >
-                    Aktif Araç
-                  </Chip>
-                </View>
-
-                <Divider style={styles.selectedVehicleDivider} />
-
-                <View style={styles.selectedVehicleSpecs}>
-                  <View style={styles.specRow}>
-                    <View style={styles.specItem}>
-                      <Text style={styles.specLabel}>Batarya</Text>
-                      <Text style={styles.specValue}>
-                        {selectedVehicle.batteryCapacity} kWh
-                      </Text>
-                    </View>
-                    <View style={styles.specItem}>
-                      <Text style={styles.specLabel}>Tüketim</Text>
-                      <Text style={styles.specValue}>
-                        {selectedVehicle.consumption} kWh/100km
-                      </Text>
-                    </View>
-                  </View>
-                  
-                  <View style={styles.socketInfo}>
-                    <Text style={styles.specLabel}>Soket Tipi</Text>
-                    <Chip
-                      mode="outlined"
-                      style={styles.socketChip}
-                      textStyle={styles.socketChipText}
-                      compact
-                    >
-                      🔌 {selectedVehicle.socketType}
-                    </Chip>
-                  </View>
-                </View>
-              </Card.Content>
-            </Card>
-          </View>
-        )}
-
-        {/* Vehicles Section */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Araçlarım</Text>
-            <Button
-              mode="outlined"
-              onPress={() => setShowAddModal(true)}
-              style={styles.addButton}
-              contentStyle={styles.addButtonContent}
-              compact
-            >
-              + Araç Ekle
-            </Button>
+        {/* Vehicle Info Section - ChargIQ Style */}
+        <View style={styles.vehicleSection}>
+          <View style={styles.vehicleSectionHeader}>
+            <Text style={styles.vehicleSectionTitle}>Araç Bilgisi</Text>
+            <TouchableOpacity>
+              <Text style={styles.moreButton}>•••</Text>
+            </TouchableOpacity>
           </View>
 
           {vehicles.length > 0 ? (
-            <FlatList
-              data={vehicles}
-              renderItem={renderVehicleCard}
-              keyExtractor={(item) => item.id}
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.vehiclesList}
-            />
+            vehicles.map((vehicle) => (
+              <Card key={vehicle.id} style={styles.vehicleCard}>
+                <Card.Content style={styles.vehicleCardContent}>
+                  <View style={styles.vehicleCardMain}>
+                    <View style={styles.vehicleInfo}>
+                      <Text style={styles.vehicleBrand}>{vehicle.brand}</Text>
+                      <Text style={styles.vehicleModel}>
+                        {vehicle.model} {vehicle.batteryCapacity} kWh
+                      </Text>
+                      <Text style={styles.vehiclePlate}>{vehicle.plate}</Text>
+                      <Text style={styles.vehicleSocket}>{formatSocketType(vehicle.socketType)}</Text>
+                    </View>
+                    {vehicle.imageUrl && (
+                      <View style={styles.vehicleImageContainer}>
+                        <View style={styles.vehicleImagePlaceholder}>
+                          <Text style={styles.vehicleEmoji}>🚗</Text>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                  
+                  <TouchableOpacity style={styles.detailsButton}>
+                    <Text style={styles.detailsButtonText}>Ayrıntıları Gör</Text>
+                    <Text style={styles.detailsButtonIcon}>⌄</Text>
+                  </TouchableOpacity>
+                </Card.Content>
+              </Card>
+            ))
           ) : (
-            <Card style={styles.emptyStateCard}>
-              <Card.Content style={styles.emptyStateContent}>
-                <Text style={styles.emptyStateIcon}>🚗</Text>
-                <Text style={styles.emptyStateTitle}>Henüz araç eklemediniz</Text>
-                <Text style={styles.emptyStateDescription}>
-                  İlk aracınızı ekleyerek WatTrip deneyiminizi başlatın
-                </Text>
+            <Card style={styles.emptyVehicleCard}>
+              <Card.Content style={styles.emptyVehicleContent}>
+                <Text style={styles.emptyVehicleText}>Henüz araç eklemediniz</Text>
                 <Button
-                  mode="contained"
+                  mode="outlined"
                   onPress={() => setShowAddModal(true)}
-                  style={styles.emptyStateButton}
-                  contentStyle={styles.emptyStateButtonContent}
+                  style={styles.addVehicleButton}
                 >
-                  İlk Aracımı Ekle
+                  + Araç Ekle
                 </Button>
               </Card.Content>
             </Card>
           )}
         </View>
 
+        {/* Menu Items */}
+        <View style={styles.menuSection}>
+          <TouchableOpacity style={styles.menuItem}>
+            <Text style={styles.menuIcon}>💰</Text>
+            <Text style={styles.menuText}>Tarifeler</Text>
+            <Text style={styles.menuArrow}>›</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity style={styles.menuItem}>
+            <Text style={styles.menuIcon}>📊</Text>
+            <Text style={styles.menuText}>Etkileşimler</Text>
+            <Text style={styles.menuArrow}>›</Text>
+          </TouchableOpacity>
+        </View>
+
         {/* Bottom Padding */}
         <View style={styles.bottomPadding} />
       </ScrollView>
 
-      {/* Floating Action Button */}
-      <FAB
-        icon="plus"
-        style={styles.fab}
-        onPress={() => setShowAddModal(true)}
-        label="Araç Ekle"
-      />
+
 
       {/* Add/Edit Vehicle Modal */}
       <AddVehicleModal
@@ -260,86 +208,186 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
-    backgroundColor: 'white',
+    backgroundColor: '#1E88E5',
     paddingHorizontal: 20,
-    paddingVertical: 24,
-    marginBottom: 16,
+    paddingTop: 60,
+    paddingBottom: 30,
+    marginBottom: 0,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 30,
+  },
+  appTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: 'white',
+  },
+  settingsButton: {
+    padding: 8,
+  },
+  settingsIcon: {
+    fontSize: 20,
+    color: 'white',
   },
   profileInfo: {
-    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 20,
   },
   avatar: {
-    backgroundColor: '#3498DB',
-    marginRight: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    marginBottom: 12,
   },
   avatarText: {
     color: 'white',
     fontWeight: 'bold',
-  },
-  greeting: {
-    flex: 1,
-  },
-  greetingText: {
-    fontSize: 16,
-    color: '#7F8C8D',
-    marginBottom: 2,
+    fontSize: 28,
   },
   userName: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#2C3E50',
+    color: 'white',
   },
-  statsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F8F9FA',
-    borderRadius: 12,
-    paddingVertical: 16,
-  },
-  statItem: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  statSeparator: {
-    width: 1,
-    height: 30,
-    backgroundColor: '#E0E0E0',
-    marginHorizontal: 20,
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#2C3E50',
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: '#7F8C8D',
-    fontWeight: '500',
-  },
-  section: {
-    marginBottom: 24,
+  vehicleSection: {
     paddingHorizontal: 20,
+    paddingTop: 20,
   },
-  sectionHeader: {
+  vehicleSectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
   },
-  sectionTitle: {
-    fontSize: 20,
+  vehicleSectionTitle: {
+    fontSize: 18,
     fontWeight: 'bold',
-    color: '#2C3E50',
+    color: '#333',
   },
-  addButton: {
-    borderColor: '#3498DB',
+  moreButton: {
+    fontSize: 20,
+    color: '#666',
+    fontWeight: 'bold',
   },
-  addButtonContent: {
-    paddingHorizontal: 8,
+  vehicleCard: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    marginBottom: 12,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  vehicleCardContent: {
+    padding: 16,
+  },
+  vehicleCardMain: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  vehicleInfo: {
+    flex: 1,
+  },
+  vehicleBrand: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 2,
+  },
+  vehicleModel: {
+    fontSize: 14,
+    color: '#333',
+    marginBottom: 2,
+  },
+  vehiclePlate: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 2,
+  },
+  vehicleSocket: {
+    fontSize: 12,
+    color: '#1E88E5',
+  },
+  vehicleImageContainer: {
+    width: 80,
+    height: 50,
+  },
+  vehicleImagePlaceholder: {
+    width: 80,
+    height: 50,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  vehicleEmoji: {
+    fontSize: 20,
+  },
+  detailsButton: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  detailsButtonText: {
+    fontSize: 14,
+    color: '#1E88E5',
+    marginRight: 4,
+  },
+  detailsButtonIcon: {
+    fontSize: 12,
+    color: '#1E88E5',
+  },
+  emptyVehicleCard: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    elevation: 1,
+  },
+  emptyVehicleContent: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  emptyVehicleText: {
+    fontSize: 16,
+    color: '#666',
+    marginBottom: 12,
+  },
+  addVehicleButton: {
+    borderColor: '#1E88E5',
+  },
+  menuSection: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    backgroundColor: 'white',
+    borderRadius: 12,
+    marginBottom: 8,
+    elevation: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  menuIcon: {
+    fontSize: 20,
+    marginRight: 12,
+  },
+  menuText: {
+    flex: 1,
+    fontSize: 16,
+    color: '#333',
+  },
+  menuArrow: {
+    fontSize: 20,
+    color: '#ccc',
   },
   selectedVehicleCard: {
     backgroundColor: 'white',
