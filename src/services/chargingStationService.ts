@@ -427,120 +427,106 @@ class ChargingStationService {
   }
 
   /**
-   * Rota üzerindeki şarj istasyonlarını bulur - Tam Optimizasyonlu Algoritma
+   * Rota üzerindeki şarj istasyonlarını bulur
    */
   async findChargingStationsAlongRoute(
     routePoints: Array<{ latitude: number; longitude: number }>,
     searchRadius: number = 15,
-    batteryRangeKm: number = 200,
-    preferredConnectorType?: string
+    batteryRangeKm: number = 200
   ): Promise<ChargingStation[]> {
     try {
       console.log('🔌 Finding charging stations along route with advanced optimization...');
       
-      // 🆕 20 arama noktası kullan
-      const searchPoints = getChargingSearchPoints(routePoints, 12); // Performance için optimize edildi
-      
-      const allStations: ChargingStation[] = [];
-      const stationIds = new Set<number>();
+      // Rota boyunca arama noktalarını belirle
+      const numberOfPoints = Math.min(Math.max(Math.floor(routePoints.length / 20), 3), 12);
+      const searchPoints = this.selectSearchPointsAlongRoute(routePoints, numberOfPoints);
 
+      console.log(`🧭 Creating ${numberOfPoints} search points from ${routePoints.length} route points`);
       console.log(`🎯 Searching at ${searchPoints.length} points along route`);
 
-      // 1. Ham verileri topla
+      let allStations: ChargingStation[] = [];
+      let stationCount = 0;
+
+      // Her arama noktası için istasyonları topla
       for (let i = 0; i < searchPoints.length; i++) {
         const point = searchPoints[i];
-        // Performance: Sadece her 3. arama noktasını logla
-        if (i % 3 === 0) {
-          console.log(`🔍 Search point ${i + 1}/${searchPoints.length}: (${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)})`);
-        }
+        console.log(`🔍 Search point ${i + 1}/${searchPoints.length}: (${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)})`);
         
         try {
-          const stations = await this.searchWithAdaptiveRadius(point.latitude, point.longitude);
+          const stationsAtPoint = await this.searchWithAdaptiveRadius(point.latitude, point.longitude);
           
-          if (stations.length > 0) {
-            for (const station of stations) {
-              if (!stationIds.has(station.ID)) {
-                stationIds.add(station.ID);
-                allStations.push(station);
-              }
-            }
-            // Performance: Sadece önemli durumlarda logla
-            if (stations.length > 0 && i % 3 === 0) {
-              console.log(`➕ Added ${stations.length} new stations from point ${i + 1} (${allStations.length} total)`);
+          if (stationsAtPoint.length > 0) {
+            const newStations = stationsAtPoint.filter(station => 
+              !allStations.some(existing => existing.ID === station.ID)
+            );
+            
+            if (newStations.length > 0) {
+              allStations.push(...newStations);
+              console.log(`➕ Added ${newStations.length} new stations from point ${i + 1} (${allStations.length} total)`);
             }
           }
+          
+          // Rate limiting için delay
+          if (i < searchPoints.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         } catch (error) {
-          console.warn(`🔌 Failed to fetch stations for point ${i + 1}:`, error);
+          console.warn(`⚠️ Error searching at point ${i + 1}:`, error);
+          continue;
         }
       }
 
       console.log(`📊 Raw stations found: ${allStations.length}`);
 
-      // 2. Gelişmiş filtreleme
+      // Gelişmiş duplicate removal
       const uniqueStations = this.removeDuplicatesAdvanced(allStations);
-      
-      // 3. Polyline'a yakın olanları seç
+      console.log(`🧹 Removed ${allStations.length - uniqueStations.length} duplicates (${allStations.length} → ${uniqueStations.length})`);
+
+      // Rota yakınında olanları filtrele
       const nearbyStations = this.filterNearestToRoute(uniqueStations, routePoints, 10);
       console.log(`📍 Stations within 10km of route: ${nearbyStations.length}`);
 
-      // 4. Connector type'a göre filtrele (opsiyonel)
-      let filteredStations = nearbyStations;
-      if (preferredConnectorType) {
-        filteredStations = this.filterByConnectorType(nearbyStations, preferredConnectorType);
-        console.log(`🔌 Stations matching connector type ${preferredConnectorType}: ${filteredStations.length}`);
-      }
+      // Power kategorilerine ayır
+      const powerCategories = this.categorizeByPower(nearbyStations);
+      console.log(`🔋 Power categories: Fast(${powerCategories.fast.length}), Medium(${powerCategories.medium.length}), Slow(${powerCategories.slow.length})`);
 
-      // 5. Akıllı durak seçimi
-      const optimalStops = this.selectOptimalStops(filteredStations, routePoints, batteryRangeKm);
+      // Optimal durakları seç
+      const optimalStops = this.selectOptimalStops(nearbyStations, routePoints, batteryRangeKm);
       console.log(`⚡ Optimal charging stops selected: ${optimalStops.length}`);
 
-      // 6. Güç seviyesine göre sırala (hızlı şarj önce)
-      const sortedStations = filteredStations.sort((a, b) => {
-        const powerA = a.Connections?.[0]?.PowerKW || 0;
-        const powerB = b.Connections?.[0]?.PowerKW || 0;
-        return powerB - powerA; // Yüksek güçten düşük güce
-      });
+      // Final optimized stations
+      const finalStations = nearbyStations.length > 15 ? 
+        [...optimalStops, ...nearbyStations.filter(s => !optimalStops.includes(s)).slice(0, 15 - optimalStops.length)] : 
+        nearbyStations;
 
-      console.log(`🔌 Final optimized stations: ${sortedStations.length}`);
-      console.log(`🏆 Top 3 fast chargers: ${sortedStations.slice(0, 3).map(s => `${s.AddressInfo?.Title} (${s.Connections?.[0]?.PowerKW || 0}kW)`).join(', ')}`);
+      console.log(`🔌 Final optimized stations: ${finalStations.length}`);
+
+      // Top 3 fast chargers for logging
+      const topFastChargers = powerCategories.fast
+        .sort((a, b) => this.getMaxPowerKW(b) - this.getMaxPowerKW(a))
+        .slice(0, 3)
+        .map(station => `${station.AddressInfo?.Title || 'Unknown'} (${this.getMaxPowerKW(station)}kW)`)
+        .join(', ');
       
-      return sortedStations;
+      console.log(`🏆 Top 3 fast chargers: ${topFastChargers}`);
+
+      return finalStations;
+
     } catch (error) {
       console.error('❌ Error finding charging stations along route:', error);
-      throw error;
+      return [];
     }
   }
 
   /**
-   * Connector type'a göre filtreler
+   * Şarj istasyonunun maksimum güç değerini döndürür
    */
-  private filterByConnectorType(
-    stations: ChargingStation[],
-    connectorType: string
-  ): ChargingStation[] {
-    return stations.filter(station => {
-      if (!station.Connections || station.Connections.length === 0) {
-        return false;
-      }
-
-      return station.Connections.some(connection => {
-        const connectionTitle = connection.ConnectionType?.Title || '';
-        const formalName = connection.ConnectionType?.FormalName || '';
-        
-        // Connector type mapping
-        if (connectorType === 'CCS') {
-          return connectionTitle.toLowerCase().includes('ccs') || 
-                 formalName.toLowerCase().includes('combined charging system');
-        } else if (connectorType === 'Type2') {
-          return connectionTitle.toLowerCase().includes('type 2') || 
-                 connectionTitle.toLowerCase().includes('type2');
-        } else if (connectorType === 'CHAdeMO') {
-          return connectionTitle.toLowerCase().includes('chademo');
-        }
-        
-        return false;
-      });
-    });
+  private getMaxPowerKW(station: ChargingStation): number {
+    if (!station.Connections || station.Connections.length === 0) {
+      return 0;
+    }
+    
+    return Math.max(...station.Connections.map(conn => conn.PowerKW || 0));
   }
 
   /**
