@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { View, ScrollView, FlatList, StyleSheet, Alert, TouchableOpacity } from 'react-native';
-import { Text, Card, Button, Divider, Avatar, Chip, FAB } from 'react-native-paper';
+import { Text, Card, Button, Divider, Avatar, Chip, FAB, Modal } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useVehicleStore, Vehicle, getVehicleDisplayName, formatSocketType } from '../context/useVehicleStore';
 import VehicleCard from '../components/VehicleCard';
 import AddVehicleModal from '../components/AddVehicleModal';
+import BottomTabBar from '../components/BottomTabBar';
 
 const ProfileScreen: React.FC = () => {
   const {
@@ -20,6 +21,7 @@ const ProfileScreen: React.FC = () => {
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
+  const [showVehicleSelector, setShowVehicleSelector] = useState(false);
 
   const selectedVehicle = getSelectedVehicle();
 
@@ -122,35 +124,34 @@ const ProfileScreen: React.FC = () => {
             </TouchableOpacity>
           </View>
 
-          {vehicles.length > 0 ? (
-            vehicles.map((vehicle) => (
-              <Card key={vehicle.id} style={styles.vehicleCard}>
-                <Card.Content style={styles.vehicleCardContent}>
-                  <View style={styles.vehicleCardMain}>
-                    <View style={styles.vehicleInfo}>
-                      <Text style={styles.vehicleBrand}>{vehicle.brand}</Text>
-                      <Text style={styles.vehicleModel}>
-                        {vehicle.model} {vehicle.batteryCapacity} kWh
-                      </Text>
-                      <Text style={styles.vehiclePlate}>{vehicle.plate}</Text>
-                      <Text style={styles.vehicleSocket}>{formatSocketType(vehicle.socketType)}</Text>
-                    </View>
-                    {vehicle.imageUrl && (
-                      <View style={styles.vehicleImageContainer}>
-                        <View style={styles.vehicleImagePlaceholder}>
-                          <Text style={styles.vehicleEmoji}>🚗</Text>
-                        </View>
-                      </View>
-                    )}
+          {selectedVehicle ? (
+            <Card style={styles.vehicleCard}>
+              <Card.Content style={styles.vehicleCardContent}>
+                <View style={styles.vehicleCardMain}>
+                  <View style={styles.vehicleInfo}>
+                    <Text style={styles.vehicleBrand}>{selectedVehicle.brand}</Text>
+                    <Text style={styles.vehicleModel}>
+                      {selectedVehicle.model} {selectedVehicle.batteryCapacity} kWh
+                    </Text>
+                    <Text style={styles.vehiclePlate}>{selectedVehicle.plate}</Text>
+                    <Text style={styles.vehicleSocket}>{formatSocketType(selectedVehicle.socketType)}</Text>
                   </View>
-                  
-                  <TouchableOpacity style={styles.detailsButton}>
-                    <Text style={styles.detailsButtonText}>Ayrıntıları Gör</Text>
-                    <Text style={styles.detailsButtonIcon}>⌄</Text>
-                  </TouchableOpacity>
-                </Card.Content>
-              </Card>
-            ))
+                  <View style={styles.vehicleImageContainer}>
+                    <View style={styles.vehicleImagePlaceholder}>
+                      <Text style={styles.vehicleEmoji}>🚗</Text>
+                    </View>
+                  </View>
+                </View>
+                
+                <TouchableOpacity 
+                  style={styles.detailsButton}
+                  onPress={() => setShowVehicleSelector(true)}
+                >
+                  <Text style={styles.detailsButtonText}>Ayrıntıları Gör</Text>
+                  <Text style={styles.detailsButtonIcon}>⌄</Text>
+                </TouchableOpacity>
+              </Card.Content>
+            </Card>
           ) : (
             <Card style={styles.emptyVehicleCard}>
               <Card.Content style={styles.emptyVehicleContent}>
@@ -186,7 +187,63 @@ const ProfileScreen: React.FC = () => {
         <View style={styles.bottomPadding} />
       </ScrollView>
 
+      {/* Alt Menü */}
+      <BottomTabBar currentRoute="Profile" />
 
+
+
+      {/* Vehicle Selector Modal */}
+      <Modal
+        visible={showVehicleSelector}
+        onDismiss={() => setShowVehicleSelector(false)}
+        contentContainerStyle={styles.modalContainer}
+      >
+        <Card style={styles.selectorModal}>
+          <Card.Title
+            title="Araç Seç"
+            titleStyle={styles.modalTitle}
+          />
+          <Divider />
+          <Card.Content style={styles.selectorContent}>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {vehicles.map((vehicle) => (
+                <TouchableOpacity
+                  key={vehicle.id}
+                  style={[
+                    styles.vehicleSelectorItem,
+                    vehicle.id === selectedVehicleId && styles.selectedVehicleItem
+                  ]}
+                  onPress={() => {
+                    handleVehicleSelect(vehicle.id);
+                    setShowVehicleSelector(false);
+                  }}
+                >
+                  <View style={styles.vehicleSelectorInfo}>
+                    <Text style={styles.vehicleSelectorBrand}>{vehicle.brand} {vehicle.model}</Text>
+                    <Text style={styles.vehicleSelectorDetails}>
+                      {vehicle.plate} • {vehicle.batteryCapacity} kWh • {formatSocketType(vehicle.socketType)}
+                    </Text>
+                  </View>
+                  {vehicle.id === selectedVehicleId && (
+                    <Text style={styles.selectedIcon}>✓</Text>
+                  )}
+                </TouchableOpacity>
+              ))}
+              
+              <TouchableOpacity
+                style={styles.addNewVehicleButton}
+                onPress={() => {
+                  setShowVehicleSelector(false);
+                  setShowAddModal(true);
+                }}
+              >
+                <Text style={styles.addNewVehicleIcon}>+</Text>
+                <Text style={styles.addNewVehicleText}>Yeni Araç Ekle</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </Card.Content>
+        </Card>
+      </Modal>
 
       {/* Add/Edit Vehicle Modal */}
       <AddVehicleModal
@@ -512,6 +569,74 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     backgroundColor: '#3498DB',
+  },
+  // Modal Styles
+  modalContainer: {
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  selectorModal: {
+    backgroundColor: 'white',
+    borderRadius: 12,
+    maxHeight: '70%',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  selectorContent: {
+    paddingVertical: 0,
+  },
+  vehicleSelectorItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  selectedVehicleItem: {
+    backgroundColor: '#E3F2FD',
+  },
+  vehicleSelectorInfo: {
+    flex: 1,
+  },
+  vehicleSelectorBrand: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 2,
+  },
+  vehicleSelectorDetails: {
+    fontSize: 12,
+    color: '#666',
+  },
+  selectedIcon: {
+    fontSize: 18,
+    color: '#1E88E5',
+    fontWeight: 'bold',
+  },
+  addNewVehicleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+    marginTop: 8,
+  },
+  addNewVehicleIcon: {
+    fontSize: 20,
+    color: '#1E88E5',
+    marginRight: 8,
+  },
+  addNewVehicleText: {
+    fontSize: 16,
+    color: '#1E88E5',
+    fontWeight: '500',
   },
 });
 
