@@ -128,6 +128,35 @@ class ChargingStationService {
   }
 
   /**
+   * 🔄 Rate limiting ve retry logic ile API çağrısı
+   */
+  private async makeAPICallWithRetry(url: string, maxRetries: number = 3): Promise<any> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await axios.get(url, {
+          timeout: 15000, // 15 saniye timeout
+        });
+        return response;
+      } catch (error: any) {
+        if (error.response?.status === 429) {
+          // Rate limiting error - exponential backoff
+          const delayMs = Math.min(1000 * Math.pow(2, attempt), 8000); // Max 8 saniye
+          console.warn(`⏳ Rate limited, waiting ${delayMs}ms before retry ${attempt}/${maxRetries}`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          
+          if (attempt === maxRetries) {
+            console.error('❌ Max retries reached for rate limiting');
+            throw error;
+          }
+        } else {
+          // Diğer error'lar için hemen throw et
+          throw error;
+        }
+      }
+    }
+  }
+
+  /**
    * Belirli koordinatlarda şarj istasyonlarını arar
    */
   async searchChargingStations(params: ChargingStationSearchParams): Promise<ChargingStation[]> {
@@ -162,7 +191,11 @@ class ChargingStationService {
 
       console.log('🔌 Searching charging stations with params:', searchParams.toString());
 
-      const response = await axios.get(`${this.baseUrl}/poi/?${searchParams.toString()}`);
+      // Rate limiting için delay ekle
+      await new Promise(resolve => setTimeout(resolve, 800)); // 800ms delay
+      
+      // Retry logic ile API çağrısı
+      const response = await this.makeAPICallWithRetry(`${this.baseUrl}/poi/?${searchParams.toString()}`);
       
       console.log(`🔌 Found ${response.data.length} charging stations`);
       
@@ -405,7 +438,7 @@ class ChargingStationService {
       console.log('🔌 Finding charging stations along route with advanced optimization...');
       
       // 🆕 20 arama noktası kullan
-      const searchPoints = getChargingSearchPoints(routePoints, 20);
+      const searchPoints = getChargingSearchPoints(routePoints, 12); // Performance için optimize edildi
       
       const allStations: ChargingStation[] = [];
       const stationIds = new Set<number>();
@@ -415,7 +448,10 @@ class ChargingStationService {
       // 1. Ham verileri topla
       for (let i = 0; i < searchPoints.length; i++) {
         const point = searchPoints[i];
-        console.log(`🔍 Search point ${i + 1}/${searchPoints.length}: (${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)})`);
+        // Performance: Sadece her 3. arama noktasını logla
+        if (i % 3 === 0) {
+          console.log(`🔍 Search point ${i + 1}/${searchPoints.length}: (${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)})`);
+        }
         
         try {
           const stations = await this.searchWithAdaptiveRadius(point.latitude, point.longitude);
@@ -427,7 +463,10 @@ class ChargingStationService {
                 allStations.push(station);
               }
             }
-            console.log(`➕ Added ${stations.length} new stations from point ${i + 1} (${allStations.length} total)`);
+            // Performance: Sadece önemli durumlarda logla
+            if (stations.length > 0 && i % 3 === 0) {
+              console.log(`➕ Added ${stations.length} new stations from point ${i + 1} (${allStations.length} total)`);
+            }
           }
         } catch (error) {
           console.warn(`🔌 Failed to fetch stations for point ${i + 1}:`, error);

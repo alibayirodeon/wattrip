@@ -615,32 +615,35 @@ export default function RouteDetailScreen() {
         }}>
           <View style={{
             backgroundColor: 'white',
-            borderRadius: 20,
-            padding: 30,
+            borderRadius: 24,
+            padding: 36,
             alignItems: 'center',
-            elevation: 8,
+            elevation: 12,
             shadowColor: '#000',
-            shadowOffset: { width: 0, height: 4 },
-            shadowOpacity: 0.3,
-            shadowRadius: 6,
+            shadowOffset: { width: 0, height: 6 },
+            shadowOpacity: 0.15,
+            shadowRadius: 10,
+            minWidth: 280,
+            maxWidth: 320
           }}>
-          <ActivityIndicator size="large" color="#1976D2" />
+            <ActivityIndicator size="large" color="#1976D2" />
             <Text style={{ 
-              marginTop: 20, 
+              marginTop: 24, 
               color: '#1976D2', 
               fontWeight: 'bold',
-              fontSize: 18,
+              fontSize: 19,
               textAlign: 'center'
             }}>
               {loading ? 'Rota hesaplanıyor...' : 'Şarj istasyonları yükleniyor...'}
             </Text>
             <Text style={{ 
-              marginTop: 8, 
+              marginTop: 10, 
               color: '#666', 
-              fontSize: 14,
-              textAlign: 'center'
+              fontSize: 15,
+              textAlign: 'center',
+              lineHeight: 22
             }}>
-              {loading ? 'En iyi güzergah bulunuyor' : 'Rota üzerindeki şarj noktaları aranıyor'}
+              {loading ? '📍 En optimal güzergah belirleniyor' : '⚡ Akıllı algoritma ile en uygun şarj noktaları aranıyor'}
             </Text>
           </View>
         </View>
@@ -834,20 +837,34 @@ export default function RouteDetailScreen() {
                   
                   {loadingChargingStations ? (
                     <View style={{
-                      backgroundColor: '#F5F5F5',
-                      borderRadius: 12,
-                      padding: 20,
+                      backgroundColor: '#F8F9FA',
+                      borderRadius: 16,
+                      padding: 24,
                       alignItems: 'center',
                       justifyContent: 'center',
-                      minHeight: 80
+                      minHeight: 120,
+                      shadowColor: '#000',
+                      shadowOffset: { width: 0, height: 2 },
+                      shadowOpacity: 0.1,
+                      shadowRadius: 4,
+                      elevation: 3
                     }}>
-                      <ActivityIndicator size="small" color="#1976D2" />
+                      <ActivityIndicator size="large" color="#1976D2" />
                       <Text style={{ 
-                        marginTop: 8, 
-                        color: '#666', 
-                        fontSize: 14 
+                        marginTop: 16, 
+                        color: '#1976D2', 
+                        fontSize: 16,
+                        fontWeight: '600'
                       }}>
                         Şarj istasyonları aranıyor...
+                      </Text>
+                      <Text style={{ 
+                        marginTop: 6, 
+                        color: '#666', 
+                        fontSize: 13,
+                        textAlign: 'center'
+                      }}>
+                        🔍 Rota boyunca en uygun şarj noktaları bulunuyor
                       </Text>
                     </View>
                   ) : chargingStations.length === 0 ? (
