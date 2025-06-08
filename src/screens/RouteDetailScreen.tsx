@@ -4,10 +4,18 @@ import { Text, Card, Button, Chip, Divider } from 'react-native-paper';
 import MapView, { Polyline, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 
 import { useLocationStore } from '../context/useLocationStore';
+import { useVehicleStore } from '../context/useVehicleStore';
 import { useNavigation } from '@react-navigation/native';
 import chargingStationService, { ChargingStation } from '../services/chargingStationService';
 import routeService from '../services/routeService';
 import RouteCard from '../components/RouteCard';
+import { 
+  calculateEVRequirementsForRoute,
+  splitRouteByRange,
+  mapSocketTypeToConnectorFilter,
+  formatVehicleDisplayInfo,
+  VehicleRangeInfo
+} from '../utils/vehicleCalculations';
 
 // Google Maps API Key - Production'da environment variable'dan alınmalı
 const GOOGLE_MAPS_API_KEY = 'AIzaSyC1RCUy97Gu_yFZuCSi9lFP2Utv3pm75Mc';
@@ -67,6 +75,7 @@ interface RouteInfo {
 
 export default function RouteDetailScreen() {
   const navigation = useNavigation();
+  const { getSelectedVehicle } = useVehicleStore();
   const { 
     from, 
     to, 
@@ -82,12 +91,15 @@ export default function RouteDetailScreen() {
     clearRoutes
   } = useLocationStore();
   
+  const selectedVehicle = getSelectedVehicle();
+  
   const [loading, setLoading] = useState(true);
   const [loadingChargingStations, setLoadingChargingStations] = useState(false);
   const [showSummary, setShowSummary] = useState(true);
   const [chargingStations, setChargingStations] = useState<ChargingStation[]>([]);
   const [showChargingStations, setShowChargingStations] = useState(true);
   const [showAllStations, setShowAllStations] = useState(false);
+  const [vehicleRangeInfo, setVehicleRangeInfo] = useState<VehicleRangeInfo | null>(null);
   const mapRef = useRef<MapView>(null);
 
   // 🛣️ Multi-route'ları al
@@ -130,25 +142,57 @@ export default function RouteDetailScreen() {
     }
   };
 
-  // 🔌 Seçili rotaya göre şarj istasyonlarını al
+  // 🔌 Seçili rotaya göre şarj istasyonlarını al (EV optimized)
   const fetchChargingStationsForSelectedRoute = async () => {
-    if (!routes[selectedRouteIndex]?.polylinePoints || routes[selectedRouteIndex].polylinePoints.length === 0) {
+    if (!routes[selectedRouteIndex]?.polylinePoints || routes[selectedRouteIndex].polylinePoints.length === 0 || !selectedVehicle) {
       return;
     }
 
     setLoadingChargingStations(true);
     try {
-      console.log(`🔌 Fetching charging stations for route ${selectedRouteIndex + 1}...`);
+      console.log(`🔌 Fetching EV-optimized charging stations for route ${selectedRouteIndex + 1}...`);
+      console.log(`🚗 Vehicle: ${selectedVehicle.brand} ${selectedVehicle.model} (${selectedVehicle.batteryCapacity}kWh, ${selectedVehicle.consumption}kWh/100km)`);
       
       const selectedRoute = routes[selectedRouteIndex];
+      const routeDistanceKm = selectedRoute.distance / 1000;
+      
+      // 1. Araç parametrelerine göre EV hesaplamaları
+      const evCalculations = calculateEVRequirementsForRoute({
+        vehicle: selectedVehicle,
+        routeDistanceKm,
+        startingBatteryPercentage: 80,
+        safetyMarginPercentage: 20
+      });
+      
+      setVehicleRangeInfo(evCalculations);
+      console.log(`🔋 EV Calculations:`, {
+        maxRange: `${evCalculations.maxRangeKm}km`,
+        currentRange: `${evCalculations.remainingRangeKm}km`,
+        routeDistance: `${routeDistanceKm}km`,
+        chargingStopsRequired: evCalculations.chargingStopsRequired,
+        estimatedConsumption: `${evCalculations.estimatedConsumptionForRoute}kWh`
+      });
+      
+      // 2. Connector type mapping
+      const connectorFilter = mapSocketTypeToConnectorFilter(selectedVehicle.socketType);
+      console.log(`🔌 Filtering by connector type: ${connectorFilter} (vehicle socket: ${selectedVehicle.socketType})`);
+      
+      // 3. Menzile göre search points oluştur
+      const searchPoints = evCalculations.chargingStopsRequired > 0
+        ? splitRouteByRange(selectedRoute.polylinePoints, evCalculations.recommendedStopInterval, routeDistanceKm)
+        : selectedRoute.polylinePoints.slice(0, Math.min(5, selectedRoute.polylinePoints.length)); // Max 5 point
+      
+      console.log(`📍 Using ${searchPoints.length} search points based on EV range (interval: ${evCalculations.recommendedStopInterval}km)`);
       
       try {
         const stations = await chargingStationService.findChargingStationsAlongRoute(
-          selectedRoute.polylinePoints,
-          15 // 15km initial radius (adaptif olarak 25, 35km'ye kadar çıkabilir)
+          searchPoints,
+          15, // 15km initial radius (adaptif olarak 25, 35km'ye kadar çıkabilir)
+          evCalculations.recommendedStopInterval,
+          connectorFilter
         );
         setChargingStations(stations);
-        console.log(`🔌 Successfully loaded ${stations.length} charging stations for route ${selectedRouteIndex + 1}`);
+        console.log(`🔌 Successfully loaded ${stations.length} EV-compatible charging stations for route ${selectedRouteIndex + 1}`);
       } catch (error) {
         console.warn('⚠️ API failed, using mock charging stations:', error);
         
@@ -160,7 +204,7 @@ export default function RouteDetailScreen() {
         }
       }
     } catch (error) {
-      console.error('❌ Error fetching charging stations:', error);
+      console.error('❌ Error fetching EV charging stations:', error);
     } finally {
       setLoadingChargingStations(false);
     }
@@ -674,6 +718,112 @@ export default function RouteDetailScreen() {
                         <Text style={{ fontSize: 12, color: '#7F8C8D' }}>Tüketim</Text>
                         <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#27AE60' }}>
                           {selectedEVInfo.estimatedConsumption.toFixed(1)} kWh
+                        </Text>
+                      </View>
+                    </View>
+                  </Card.Content>
+                </Card>
+              </View>
+            )}
+
+            {/* EV Vehicle Information */}
+            {selectedVehicle && vehicleRangeInfo && (
+              <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
+                <Text style={{ 
+                  fontSize: 18, 
+                  fontWeight: 'bold', 
+                  color: '#2C3E50',
+                  marginBottom: 12
+                }}>
+                  🚗 Araç Analizi
+                </Text>
+                
+                <Card style={{ backgroundColor: 'white', elevation: 2, borderRadius: 12 }}>
+                  <Card.Content style={{ padding: 16 }}>
+                    <View style={{ 
+                      flexDirection: 'row', 
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginBottom: 12
+                    }}>
+                      <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#2C3E50' }}>
+                        {selectedVehicle.brand} {selectedVehicle.model}
+                      </Text>
+                      <Chip 
+                        mode="flat" 
+                        style={{ 
+                          backgroundColor: selectedVehicle.socketType === 'CCS' ? '#E3F2FD' : 
+                                         selectedVehicle.socketType === 'Type2' ? '#E8F5E8' : '#FFF3E0'
+                        }}
+                      >
+                        <Text style={{ 
+                          color: selectedVehicle.socketType === 'CCS' ? '#1976D2' : 
+                                selectedVehicle.socketType === 'Type2' ? '#388E3C' : '#F57C00',
+                          fontWeight: 'bold'
+                        }}>
+                          {selectedVehicle.socketType}
+                        </Text>
+                      </Chip>
+                    </View>
+                    
+                    <View style={{ 
+                      flexDirection: 'row', 
+                      justifyContent: 'space-between',
+                      marginBottom: 12
+                    }}>
+                      <View style={{ alignItems: 'center', flex: 1 }}>
+                        <Text style={{ fontSize: 12, color: '#7F8C8D' }}>Batarya</Text>
+                        <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#2C3E50' }}>
+                          {selectedVehicle.batteryCapacity} kWh
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: 'center', flex: 1 }}>
+                        <Text style={{ fontSize: 12, color: '#7F8C8D' }}>Tüketim</Text>
+                        <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#2C3E50' }}>
+                          {selectedVehicle.consumption} kWh/100km
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: 'center', flex: 1 }}>
+                        <Text style={{ fontSize: 12, color: '#7F8C8D' }}>Max Menzil</Text>
+                        <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#27AE60' }}>
+                          {vehicleRangeInfo.maxRangeKm} km
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Divider style={{ marginVertical: 12 }} />
+                    
+                    <View style={{ 
+                      flexDirection: 'row', 
+                      justifyContent: 'space-between',
+                      alignItems: 'center'
+                    }}>
+                      <View style={{ alignItems: 'center', flex: 1 }}>
+                        <Text style={{ fontSize: 12, color: '#7F8C8D' }}>Mevcut Menzil</Text>
+                        <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#3498DB' }}>
+                          {vehicleRangeInfo.remainingRangeKm} km
+                        </Text>
+                        <Text style={{ fontSize: 10, color: '#7F8C8D' }}>
+                          (%{vehicleRangeInfo.batteryPercentage} batarya)
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: 'center', flex: 1 }}>
+                        <Text style={{ fontSize: 12, color: '#7F8C8D' }}>Tahmini Tüketim</Text>
+                        <Text style={{ fontSize: 14, fontWeight: 'bold', color: '#E67E22' }}>
+                          {vehicleRangeInfo.estimatedConsumptionForRoute} kWh
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: 'center', flex: 1 }}>
+                        <Text style={{ fontSize: 12, color: '#7F8C8D' }}>Şarj Durağı</Text>
+                        <Text style={{ 
+                          fontSize: 14, 
+                          fontWeight: 'bold', 
+                          color: vehicleRangeInfo.chargingStopsRequired > 0 ? '#E74C3C' : '#27AE60'
+                        }}>
+                          {vehicleRangeInfo.chargingStopsRequired > 0 
+                            ? `${vehicleRangeInfo.chargingStopsRequired} durak`
+                            : 'Gereksiz'
+                          }
                         </Text>
                       </View>
                     </View>

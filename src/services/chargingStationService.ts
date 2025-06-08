@@ -432,7 +432,8 @@ class ChargingStationService {
   async findChargingStationsAlongRoute(
     routePoints: Array<{ latitude: number; longitude: number }>,
     searchRadius: number = 15,
-    batteryRangeKm: number = 200
+    batteryRangeKm: number = 200,
+    preferredConnectorType?: string
   ): Promise<ChargingStation[]> {
     try {
       console.log('🔌 Finding charging stations along route with advanced optimization...');
@@ -482,12 +483,19 @@ class ChargingStationService {
       const nearbyStations = this.filterNearestToRoute(uniqueStations, routePoints, 10);
       console.log(`📍 Stations within 10km of route: ${nearbyStations.length}`);
 
-      // 4. Akıllı durak seçimi
-      const optimalStops = this.selectOptimalStops(nearbyStations, routePoints, batteryRangeKm);
+      // 4. Connector type'a göre filtrele (opsiyonel)
+      let filteredStations = nearbyStations;
+      if (preferredConnectorType) {
+        filteredStations = this.filterByConnectorType(nearbyStations, preferredConnectorType);
+        console.log(`🔌 Stations matching connector type ${preferredConnectorType}: ${filteredStations.length}`);
+      }
+
+      // 5. Akıllı durak seçimi
+      const optimalStops = this.selectOptimalStops(filteredStations, routePoints, batteryRangeKm);
       console.log(`⚡ Optimal charging stops selected: ${optimalStops.length}`);
 
-      // 5. Güç seviyesine göre sırala (hızlı şarj önce)
-      const sortedStations = nearbyStations.sort((a, b) => {
+      // 6. Güç seviyesine göre sırala (hızlı şarj önce)
+      const sortedStations = filteredStations.sort((a, b) => {
         const powerA = a.Connections?.[0]?.PowerKW || 0;
         const powerB = b.Connections?.[0]?.PowerKW || 0;
         return powerB - powerA; // Yüksek güçten düşük güce
@@ -501,6 +509,38 @@ class ChargingStationService {
       console.error('❌ Error finding charging stations along route:', error);
       throw error;
     }
+  }
+
+  /**
+   * Connector type'a göre filtreler
+   */
+  private filterByConnectorType(
+    stations: ChargingStation[],
+    connectorType: string
+  ): ChargingStation[] {
+    return stations.filter(station => {
+      if (!station.Connections || station.Connections.length === 0) {
+        return false;
+      }
+
+      return station.Connections.some(connection => {
+        const connectionTitle = connection.ConnectionType?.Title || '';
+        const formalName = connection.ConnectionType?.FormalName || '';
+        
+        // Connector type mapping
+        if (connectorType === 'CCS') {
+          return connectionTitle.toLowerCase().includes('ccs') || 
+                 formalName.toLowerCase().includes('combined charging system');
+        } else if (connectorType === 'Type2') {
+          return connectionTitle.toLowerCase().includes('type 2') || 
+                 connectionTitle.toLowerCase().includes('type2');
+        } else if (connectorType === 'CHAdeMO') {
+          return connectionTitle.toLowerCase().includes('chademo');
+        }
+        
+        return false;
+      });
+    });
   }
 
   /**

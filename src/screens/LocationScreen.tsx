@@ -4,6 +4,7 @@ import { Text, Button, TextInput, Chip } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import BottomTabBar from '../components/BottomTabBar';
 import { useLocationStore } from '../context/useLocationStore';
+import { useVehicleStore } from '../context/useVehicleStore';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/types';
@@ -16,7 +17,10 @@ const vehicleOptions = [
 const LocationScreen = () => {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { from, to } = useLocationStore();
+  const { getSelectedVehicle } = useVehicleStore();
   const [advanced, setAdvanced] = React.useState(false);
+  
+  const selectedVehicle = getSelectedVehicle();
 
   const goToSearch = useCallback((type: 'from' | 'to') => {
     navigation.navigate('SearchLocation', { type });
@@ -33,8 +37,15 @@ const LocationScreen = () => {
         {/* Üst başlık ve araç seçici */}
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 32, marginHorizontal: 20 }}>
           <Text style={{ fontSize: 28, fontWeight: 'bold', color: '#1A2B49' }}>Rota Oluştur</Text>
-          <Button mode="outlined" icon="car" style={{ borderRadius: 16, borderColor: '#E0E7EF' }} textColor="#1A2B49" contentStyle={{ flexDirection: 'row-reverse' }}>
-            Peugeot, e-2008…
+          <Button 
+            mode="outlined" 
+            icon="car" 
+            style={{ borderRadius: 16, borderColor: '#E0E7EF' }} 
+            textColor="#1A2B49" 
+            contentStyle={{ flexDirection: 'row-reverse' }}
+            onPress={() => navigation.navigate('Profile')}
+          >
+            {selectedVehicle ? `${selectedVehicle.brand}, ${selectedVehicle.model}` : 'Araç Seç'}
           </Button>
         </View>
         {/* Başlangıç ve Bitiş Noktası */}
