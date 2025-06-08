@@ -6,6 +6,7 @@ import LocationScreen from './src/screens/LocationScreen';
 import SearchLocationScreen from './src/screens/SearchLocationScreen';
 import MapSelectionScreen from './src/screens/MapSelectionScreen';
 import RouteDetailScreen from './src/screens/RouteDetailScreen';
+import ProfileScreen from './src/screens/ProfileScreen';
 import ErrorBoundary from './src/components/ErrorBoundary';
 import { RootStackParamList } from './src/navigation/types';
 import * as Location from 'expo-location';
@@ -68,6 +69,11 @@ export default function App() {
               name="RouteDetail" 
               component={RouteDetailScreen} 
               options={{ title: 'Rota Detayı' }} 
+            />
+            <Stack.Screen 
+              name="Profile" 
+              component={ProfileScreen} 
+              options={{ title: 'Profil', headerShown: false }} 
             />
           </Stack.Navigator>
         </NavigationContainer>

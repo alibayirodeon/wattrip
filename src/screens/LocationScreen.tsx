@@ -102,7 +102,7 @@ const LocationScreen = () => {
         </View>
       </ScrollView>
       {/* Alt Menü */}
-      <BottomTabBar />
+      <BottomTabBar currentRoute="Location" />
     </View>
   );
 };
