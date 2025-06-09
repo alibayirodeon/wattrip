@@ -4,10 +4,15 @@ import { Text, Card, Button, Chip, Divider } from 'react-native-paper';
 import MapView, { Polyline, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 
 import { useLocationStore } from '../context/useLocationStore';
+import { useVehicleStore } from '../context/useVehicleStore';
 import { useNavigation } from '@react-navigation/native';
 import chargingStationService, { ChargingStation } from '../services/chargingStationService';
 import routeService from '../services/routeService';
 import RouteCard from '../components/RouteCard';
+import ChargingStopCard from '../components/ChargingStopCard';
+import TripSummary from '../components/TripSummary';
+import { generateChargingPlan, ChargingPlanResult, formatChargingPlanForUI, validateChargingPlan } from '../utils/chargingPlanCalculator';
+import { formatDuration } from '../lib/energyUtils';
 
 // Google Maps API Key - Production'da environment variable'dan alınmalı
 const GOOGLE_MAPS_API_KEY = 'AIzaSyC1RCUy97Gu_yFZuCSi9lFP2Utv3pm75Mc';
@@ -81,14 +86,24 @@ export default function RouteDetailScreen() {
     setLoadingRoutes,
     clearRoutes
   } = useLocationStore();
+
+  // 🚗 Vehicle Store
+  const { getSelectedVehicle, initializeMockData } = useVehicleStore();
   
   const [loading, setLoading] = useState(true);
   const [loadingChargingStations, setLoadingChargingStations] = useState(false);
+  const [loadingChargingPlan, setLoadingChargingPlan] = useState(false);
   const [showSummary, setShowSummary] = useState(true);
   const [chargingStations, setChargingStations] = useState<ChargingStation[]>([]);
   const [showChargingStations, setShowChargingStations] = useState(true);
   const [showAllStations, setShowAllStations] = useState(false);
+  const [chargingPlan, setChargingPlan] = useState<ChargingPlanResult | null>(null);
+  const [showChargingPlan, setShowChargingPlan] = useState(false);
+  const [localSelectedRouteIndex, setLocalSelectedRouteIndex] = useState<number | null>(null);
   const mapRef = useRef<MapView>(null);
+
+  // Rota renkleri
+  const routeColors = ['#FF4500', '#2196F3', '#4CAF50', '#FF9800', '#9C27B0'];
 
   // 🛣️ Multi-route'ları al
   const fetchMultipleRoutes = async () => {
@@ -137,6 +152,7 @@ export default function RouteDetailScreen() {
     }
 
     setLoadingChargingStations(true);
+    console.log('🚀 Starting charging station search with optimizations...');
     try {
       console.log(`🔌 Fetching charging stations for route ${selectedRouteIndex + 1}...`);
       
@@ -146,11 +162,39 @@ export default function RouteDetailScreen() {
       try {
         const stations = await chargingStationService.findChargingStationsAlongRoute(
           selectedRoute.polylinePoints,
-          15, // 15km initial radius
-          200 // 200km battery range default
+          20, // 20km initial radius (genişletildi)
+          300 // 300km battery range (daha uzun menzil)
         );
-        setChargingStations(stations);
-        console.log(`🔌 Successfully loaded ${stations.length} charging stations for route ${selectedRouteIndex + 1}`);
+        
+                 // Eğer az istasyon bulunduysa mock data ile destekle
+         let finalStations = stations;
+         if (stations.length < 3 && fromCoord) {
+           console.warn(`⚠️ Only ${stations.length} stations found, adding mock stations for better planning`);
+           const mockStations = chargingStationService.getMockChargingStations(fromCoord[0], fromCoord[1]);
+           
+           // Gerçek ve mock istasyonları birleştir (duplicate'leri kaldırarak)
+           const allStations = [...stations];
+           mockStations.forEach(mockStation => {
+             const exists = stations.some(realStation => {
+               const realLat = realStation.AddressInfo?.Latitude;
+               const realLng = realStation.AddressInfo?.Longitude;
+               const mockLat = mockStation.AddressInfo?.Latitude;
+               const mockLng = mockStation.AddressInfo?.Longitude;
+               
+               return realLat && realLng && mockLat && mockLng &&
+                      Math.abs(realLat - mockLat) < 0.01 &&
+                      Math.abs(realLng - mockLng) < 0.01;
+             });
+             if (!exists) {
+               allStations.push(mockStation);
+             }
+           });
+           finalStations = allStations;
+           console.log(`🔌 Enhanced with mock data: ${finalStations.length} total stations`);
+         }
+        
+        setChargingStations(finalStations);
+        console.log(`🔌 Successfully loaded ${finalStations.length} charging stations for route ${selectedRouteIndex + 1}`);
       } catch (error) {
         console.warn('⚠️ API failed, using mock charging stations:', error);
         
@@ -168,14 +212,139 @@ export default function RouteDetailScreen() {
     }
   };
 
+  // 🧮 Şarj planını hesapla
+  const generateChargingPlanForRoute = async (stations: ChargingStation[]) => {
+    let selectedVehicle = getSelectedVehicle();
+    
+    // Eğer araç seçili değilse varsayılan bir araç kullan
+    if (!selectedVehicle) {
+      console.warn('⚠️ No vehicle selected, using default vehicle for charging plan');
+      selectedVehicle = {
+        id: 'default',
+        brand: 'Hyundai',
+        model: 'IONIQ 5',
+        plate: '35 HYN 789',
+        batteryCapacity: 77.4,
+        consumption: 16.8,
+        socketType: 'CCS',
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    const selectedRoute = routes[selectedRouteIndex];
+    if (!selectedRoute) {
+      console.warn('⚠️ No route selected');
+      return;
+    }
+
+    setLoadingChargingPlan(true);
+    try {
+      console.log('🧮 Generating charging plan...', {
+        vehicle: `${selectedVehicle.brand} ${selectedVehicle.model}`,
+        batteryCapacity: `${selectedVehicle.batteryCapacity}kWh`,
+        consumption: `${selectedVehicle.consumption}kWh/100km`,
+        socketType: selectedVehicle.socketType,
+        routeDistance: `${(selectedRoute.distance / 1000).toFixed(1)}km`,
+        availableStations: stations.length
+      });
+
+      // Route data'yı hazırla
+      const routeData = {
+        distance: selectedRoute.distance,
+        polylinePoints: selectedRoute.polylinePoints
+      };
+
+      // Minimum validation
+      if (!routeData.distance || routeData.distance < 1000) {
+        console.warn('⚠️ Route too short, no charging plan needed');
+        setChargingPlan({
+          chargingStops: [],
+          totalChargingTimeMinutes: 0,
+          canReachDestination: true,
+          batteryAtDestinationPercent: 70,
+          totalEnergyConsumedKWh: (routeData.distance / 1000) * (selectedVehicle.consumption / 100),
+          warnings: ['Rota çok kısa, şarj gerekmeyebilir']
+        });
+        return;
+      }
+
+      // Şarj planını hesapla
+      const plan = generateChargingPlan({
+        selectedVehicle,
+        routeData,
+        chargingStations: stations
+      });
+
+      setChargingPlan(plan);
+      console.log('✅ Charging plan generated:', {
+        stops: plan.chargingStops.length,
+        totalTime: `${plan.totalChargingTimeMinutes}min`,
+        canReach: plan.canReachDestination,
+        finalBattery: `${plan.batteryAtDestinationPercent}%`,
+        warnings: plan.warnings.length
+      });
+
+      // Sadece kritik uyarıları göster
+      const criticalWarnings = plan.warnings.filter(warning => 
+        warning.includes('ulaşım garantilenemiyor') || 
+        warning.includes('istasyon bulunamadı')
+      );
+      
+      if (criticalWarnings.length > 0) {
+        Alert.alert('Önemli Uyarı', criticalWarnings.join('\n\n'), [
+          { text: 'Tamam', style: 'default' }
+        ]);
+      }
+
+    } catch (error) {
+      console.error('❌ Error generating charging plan:', error);
+      
+      // Fallback plan oluştur
+      const fallbackPlan = {
+        chargingStops: [],
+        totalChargingTimeMinutes: 0,
+        canReachDestination: false,
+        batteryAtDestinationPercent: 0,
+        totalEnergyConsumedKWh: (selectedRoute.distance / 1000) * (selectedVehicle.consumption / 100),
+        warnings: ['Şarj planı hesaplanırken hata oluştu. Lütfen manuel olarak planlayın.']
+      };
+      
+      setChargingPlan(fallbackPlan);
+    } finally {
+      setLoadingChargingPlan(false);
+    }
+  };
+
   // Rota seçimi değiştiğinde
   const handleRouteSelect = (index: number) => {
     console.log(`🎯 Route ${index + 1} selected`);
+    setLocalSelectedRouteIndex(index);
     setSelectedRouteIndex(index);
+    
+    // Şarj planını sıfırla
+    setChargingPlan(null);
+  };
+
+  // Şarj planı oluşturma fonksiyonu
+  const handleCreateChargingPlan = () => {
+    if (localSelectedRouteIndex === null) {
+      Alert.alert('Uyarı', 'Lütfen önce bir rota seçin.');
+      return;
+    }
+    
+    if (chargingStations.length === 0) {
+      Alert.alert('Uyarı', 'Şarj istasyonları henüz yüklenmedi. Lütfen bekleyin.');
+      return;
+    }
+
+    generateChargingPlanForRoute(chargingStations);
   };
 
   // İlk yükleme
   useEffect(() => {
+    // Vehicle mock data'yı initialize et
+    initializeMockData();
+    
     fetchMultipleRoutes();
     
     // Cleanup function
@@ -184,29 +353,30 @@ export default function RouteDetailScreen() {
     };
   }, [fromCoord, toCoord]);
 
-  // Seçili rota değiştiğinde şarj istasyonlarını yenile
+  // Manuel rota seçimi yapıldığında şarj istasyonlarını yükle
   useEffect(() => {
-    if (routes.length > 0 && !loading) {
+    if (routes.length > 0 && !loading && localSelectedRouteIndex !== null) {
       fetchChargingStationsForSelectedRoute();
     }
-  }, [selectedRouteIndex, routes, loading]);
+  }, [localSelectedRouteIndex, routes, loading]);
 
-  // 🗺️ Harita zoom ayarları
+  // 🗺️ Harita zoom ayarları - Tüm rotaları göster
   useEffect(() => {
     if (!mapRef.current || routes.length === 0) return;
 
-    const fitMapToSelectedRoute = () => {
-      const selectedRoute = routes[selectedRouteIndex];
+    const fitMapToAllRoutes = () => {
+      // Tüm rota noktalarını topla
+      const allPoints = routes.flatMap(route => route.polylinePoints);
       
-      if (selectedRoute?.polylinePoints && selectedRoute.polylinePoints.length > 1) {
-        console.log(`🗺️ Fitting map to route ${selectedRouteIndex + 1} with ${selectedRoute.polylinePoints.length} points`);
+      if (allPoints.length > 0) {
+        console.log(`🗺️ Fitting map to ${routes.length} routes with ${allPoints.length} total points`);
         
-        mapRef.current?.fitToCoordinates(selectedRoute.polylinePoints, {
+        mapRef.current?.fitToCoordinates(allPoints, {
           edgePadding: { 
             top: 100, 
-            bottom: showSummary ? 320 : 100, 
-            left: 50, 
-            right: 50 
+            bottom: showSummary ? 350 : 150, 
+            left: 60, 
+            right: 60 
           },
           animated: true,
         });
@@ -214,12 +384,12 @@ export default function RouteDetailScreen() {
         // Ek zoom optimizasyonu
         setTimeout(() => {
           if (mapRef.current) {
-            mapRef.current.fitToCoordinates(selectedRoute.polylinePoints, {
+            mapRef.current.fitToCoordinates(allPoints, {
               edgePadding: { 
                 top: 80, 
-                bottom: showSummary ? 300 : 80, 
-                left: 40, 
-                right: 40 
+                bottom: showSummary ? 320 : 120, 
+                left: 50, 
+                right: 50 
               },
               animated: true,
             });
@@ -247,10 +417,10 @@ export default function RouteDetailScreen() {
     };
 
     // Multiple zoom attempts for better results
-    setTimeout(fitMapToSelectedRoute, 500);
-    setTimeout(fitMapToSelectedRoute, 1000);
+    setTimeout(fitMapToAllRoutes, 500);
+    setTimeout(fitMapToAllRoutes, 1000);
     
-  }, [routes, selectedRouteIndex, fromCoord, toCoord, showSummary]);
+  }, [routes, fromCoord, toCoord, showSummary]);
 
   // Helper functions
   const formatDuration = (seconds: number) => {
@@ -437,45 +607,53 @@ export default function RouteDetailScreen() {
           onMapReady={() => {
             console.log('🗺️ Map is ready');
             
-            // Harita hazır olduğunda hemen zoom yap
-            if (selectedRoute?.polylinePoints && selectedRoute.polylinePoints.length > 1) {
+            // Harita hazır olduğunda tüm rotaları göster
+            if (routes.length > 0) {
               setTimeout(() => {
-                mapRef.current?.fitToCoordinates(selectedRoute.polylinePoints, {
-                  edgePadding: { 
-                    top: 80, 
-                    bottom: showSummary ? 300 : 80, 
-                    left: 40, 
-                    right: 40 
-                  },
-                  animated: true,
-                });
+                const allPoints = routes.flatMap(route => route.polylinePoints);
+                if (allPoints.length > 0) {
+                  mapRef.current?.fitToCoordinates(allPoints, {
+                    edgePadding: { 
+                      top: 80, 
+                      bottom: showSummary ? 300 : 80, 
+                      left: 40, 
+                      right: 40 
+                    },
+                    animated: true,
+                  });
+                }
               }, 300);
             }
           }}
         >
-          {/* Seçili Rota Polyline - Gölge */}
-          {selectedRoute?.polylinePoints && selectedRoute.polylinePoints.length > 1 && (
-            <Polyline 
-              coordinates={selectedRoute.polylinePoints} 
-              strokeColor="rgba(0,0,0,0.4)" 
-              strokeWidth={14}
-              lineCap="round"
-              lineJoin="round"
-              zIndex={900}
-            />
-          )}
-          
-          {/* Seçili Rota Polyline - Ana çizgi */}
-          {selectedRoute?.polylinePoints && selectedRoute.polylinePoints.length > 1 && (
-            <Polyline 
-              coordinates={selectedRoute.polylinePoints} 
-              strokeColor="#FF4500" 
-              strokeWidth={10}
-              lineCap="round"
-              lineJoin="round"
-              zIndex={950}
-            />
-          )}
+          {/* Tüm Rotalar */}
+          {routes.map((route, index) => {
+            const isSelected = localSelectedRouteIndex === index;
+            const routeColor = routeColors[index % routeColors.length];
+            
+            return (
+              <React.Fragment key={`route-${index}`}>
+                {/* Gölge */}
+                <Polyline 
+                  coordinates={route.polylinePoints} 
+                  strokeColor="rgba(0,0,0,0.3)" 
+                  strokeWidth={isSelected ? 16 : 12}
+                  lineCap="round"
+                  lineJoin="round"
+                  zIndex={800 + index}
+                />
+                {/* Ana çizgi */}
+                <Polyline 
+                  coordinates={route.polylinePoints} 
+                  strokeColor={isSelected ? routeColor : `${routeColor}80`} 
+                  strokeWidth={isSelected ? 12 : 6}
+                  lineCap="round"
+                  lineJoin="round"
+                  zIndex={850 + index}
+                />
+              </React.Fragment>
+            );
+          })}
 
           {/* Başlangıç Marker */}
           {fromCoord && (
@@ -535,6 +713,42 @@ export default function RouteDetailScreen() {
           {showChargingStations && chargingStations.map((station, index) => 
             renderStationMarker(station, index)
           )}
+
+          {/* Şarj Planı Durakları - Özel Marker'lar */}
+          {chargingPlan && chargingPlan.chargingStops.map((stop, index) => (
+            <Marker
+              key={`charging-plan-${stop.stationId}`}
+              coordinate={stop.stopCoord}
+              title={`🔋 Durak ${index + 1}: ${stop.name}`}
+              description={`⚡ ${stop.stationPowerKW}kW | ⏱️ ${stop.estimatedChargeTimeMinutes}dk | 🔋 ${stop.batteryBeforeStopPercent}% → ${stop.batteryAfterStopPercent}%`}
+              zIndex={1000}
+            >
+              <View style={{ 
+                backgroundColor: '#FF4500', 
+                padding: 10, 
+                borderRadius: 20,
+                borderWidth: 4,
+                borderColor: 'white',
+                elevation: 8,
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.4,
+                shadowRadius: 4,
+                alignItems: 'center',
+                justifyContent: 'center',
+                minWidth: 32,
+                minHeight: 32,
+              }}>
+                <Text style={{ 
+                  color: 'white', 
+                  fontSize: 12, 
+                  fontWeight: 'bold' 
+                }}>
+                  {index + 1}
+                </Text>
+              </View>
+            </Marker>
+          ))}
         </MapView>
 
         {/* Top overlay - Route count info */}
@@ -594,7 +808,7 @@ export default function RouteDetailScreen() {
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false}>
-            {/* Route Cards Horizontal List */}
+            {/* Route Selection */}
             {routes.length > 0 && (
               <View style={{ marginBottom: 16 }}>
                 <Text style={{ 
@@ -604,7 +818,7 @@ export default function RouteDetailScreen() {
                   marginHorizontal: 16,
                   marginBottom: 12
                 }}>
-                  Rota Seçenekleri
+                  🛣️ Rota Seçin ({routes.length} seçenek)
                 </Text>
                 
                 <FlatList
@@ -613,116 +827,286 @@ export default function RouteDetailScreen() {
                   showsHorizontalScrollIndicator={false}
                   keyExtractor={(_, index) => index.toString()}
                   contentContainerStyle={{ paddingLeft: 16 }}
-                  renderItem={({ item, index }) => (
-                    <RouteCard
-                      route={item}
-                      evInfo={routeEVInfo[index]}
-                      index={index}
-                      isSelected={index === selectedRouteIndex}
-                      onSelect={handleRouteSelect}
-                    />
-                  )}
-                />
-              </View>
-            )}
-
-            {/* Selected Route Summary */}
-            {selectedRoute && selectedEVInfo && (
-              <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
-                <Text style={{ 
-                  fontSize: 18, 
-                  fontWeight: 'bold', 
-                  color: '#2C3E50',
-                  marginBottom: 12
-                }}>
-                  Seçili Rota Detayları
-                </Text>
-                
-                <Card style={{ backgroundColor: 'white', elevation: 2, borderRadius: 12 }}>
-                  <Card.Content style={{ padding: 16 }}>
-                    <View style={{ 
-                      flexDirection: 'row', 
-                      justifyContent: 'space-between',
-                      marginBottom: 12
-                    }}>
-                      <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#2C3E50' }}>
-                        {selectedRoute.summary}
-                      </Text>
-                      <Chip mode="flat" style={{ backgroundColor: '#E8F5E8' }}>
-                        <Text style={{ color: '#27AE60', fontWeight: 'bold' }}>
-                          Rota {selectedRouteIndex + 1}
-                        </Text>
-                      </Chip>
-                    </View>
+                  renderItem={({ item, index }) => {
+                    const isSelected = localSelectedRouteIndex === index;
+                    const routeColor = routeColors[index % routeColors.length];
                     
-                    <View style={{ 
-                      flexDirection: 'row', 
-                      justifyContent: 'space-around',
-                      paddingVertical: 8
+                    return (
+                      <TouchableOpacity
+                        onPress={() => handleRouteSelect(index)}
+                        style={{
+                          marginRight: 12,
+                          backgroundColor: isSelected ? routeColor : 'white',
+                          borderRadius: 16,
+                          padding: 16,
+                          borderWidth: 2,
+                          borderColor: routeColor,
+                          minWidth: 180,
+                          elevation: isSelected ? 6 : 2,
+                          shadowColor: '#000',
+                          shadowOffset: { width: 0, height: 2 },
+                          shadowOpacity: isSelected ? 0.3 : 0.1,
+                          shadowRadius: isSelected ? 6 : 3,
+                        }}
+                      >
+                        <View style={{ 
+                          flexDirection: 'row', 
+                          alignItems: 'center',
+                          marginBottom: 8
+                        }}>
+                          <View style={{
+                            width: 20,
+                            height: 20,
+                            borderRadius: 10,
+                            backgroundColor: routeColor,
+                            marginRight: 8,
+                            borderWidth: isSelected ? 0 : 2,
+                            borderColor: 'white'
+                          }} />
+                          <Text style={{ 
+                            fontSize: 14, 
+                            fontWeight: 'bold',
+                            color: isSelected ? 'white' : '#2C3E50',
+                            flex: 1
+                          }}>
+                            Rota {index + 1}
+                          </Text>
+                        </View>
+                        
+                        <Text style={{ 
+                          fontSize: 16, 
+                          fontWeight: 'bold',
+                          color: isSelected ? 'white' : '#2C3E50',
+                          marginBottom: 4
+                        }}>
+                          {formatDistance(item.distance)}
+                        </Text>
+                        
+                        <Text style={{ 
+                          fontSize: 14,
+                          color: isSelected ? 'rgba(255,255,255,0.9)' : '#7F8C8D',
+                          marginBottom: 8
+                        }}>
+                          {formatDuration(item.duration)}
+                        </Text>
+                        
+                        <Text style={{ 
+                          fontSize: 12,
+                          color: isSelected ? 'rgba(255,255,255,0.8)' : '#95A5A6',
+                          fontStyle: 'italic'
+                        }}>
+                          {item.summary}
+                        </Text>
+                        
+                        {routeEVInfo[index] && (
+                          <View style={{ 
+                            marginTop: 8,
+                            paddingTop: 8,
+                            borderTopWidth: 1,
+                            borderTopColor: isSelected ? 'rgba(255,255,255,0.3)' : '#E8E8E8'
+                          }}>
+                            <Text style={{ 
+                              fontSize: 12,
+                              color: isSelected ? 'rgba(255,255,255,0.9)' : '#27AE60',
+                              fontWeight: '600'
+                            }}>
+                              ⚡ {routeEVInfo[index].estimatedConsumption.toFixed(1)} kWh
+                            </Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  }}
+                />
+                
+                {/* Yükleme Durumu Göstergesi - ChatGPT önerisi */}
+                {loadingChargingStations && localSelectedRouteIndex !== null && (
+                  <View style={{ 
+                    marginHorizontal: 16, 
+                    marginTop: 16,
+                    backgroundColor: '#F8F9FA',
+                    padding: 16,
+                    borderRadius: 12,
+                    flexDirection: 'row',
+                    alignItems: 'center'
+                  }}>
+                    <ActivityIndicator size="small" color={routeColors[localSelectedRouteIndex % routeColors.length]} />
+                    <Text style={{ 
+                      marginLeft: 12,
+                      color: '#6C757D',
+                      fontSize: 14
                     }}>
-                      <View style={{ alignItems: 'center' }}>
-                        <Text style={{ fontSize: 12, color: '#7F8C8D' }}>Mesafe</Text>
-                        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#2C3E50' }}>
-                          {formatDistance(selectedRoute.distance)}
-                        </Text>
-                      </View>
-                      <View style={{ alignItems: 'center' }}>
-                        <Text style={{ fontSize: 12, color: '#7F8C8D' }}>Süre</Text>
-                        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#2C3E50' }}>
-                          {formatDuration(selectedRoute.duration)}
-                        </Text>
-                      </View>
-                      <View style={{ alignItems: 'center' }}>
-                        <Text style={{ fontSize: 12, color: '#7F8C8D' }}>Tüketim</Text>
-                        <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#27AE60' }}>
-                          {selectedEVInfo.estimatedConsumption.toFixed(1)} kWh
-                        </Text>
-                      </View>
-                    </View>
-                  </Card.Content>
-                </Card>
+                      🔍 Rota boyunca şarj istasyonları aranıyor...
+                    </Text>
+                  </View>
+                )}
+                
+                {/* Planı Oluştur Butonu */}
+                {localSelectedRouteIndex !== null && !loadingChargingStations && (
+                  <View style={{ 
+                    marginHorizontal: 16, 
+                    marginTop: 16 
+                  }}>
+                    <Button 
+                      mode="contained" 
+                      onPress={handleCreateChargingPlan}
+                      loading={loadingChargingPlan}
+                      disabled={loadingChargingStations || loadingChargingPlan || chargingStations.length === 0}
+                      style={{ 
+                        backgroundColor: chargingStations.length === 0 ? '#BDC3C7' : routeColors[localSelectedRouteIndex % routeColors.length],
+                        borderRadius: 12,
+                        elevation: 4
+                      }}
+                      contentStyle={{ paddingVertical: 8 }}
+                      icon="lightning-bolt"
+                    >
+                      <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 16 }}>
+                        {chargingStations.length === 0 ? '⏳ İstasyonlar Yükleniyor...' : '⚡ Şarj Planını Oluştur'}
+                      </Text>
+                    </Button>
+                    
+                    {chargingStations.length > 0 && (
+                      <Text style={{ 
+                        textAlign: 'center', 
+                        marginTop: 8, 
+                        fontSize: 12, 
+                        color: '#27AE60',
+                        fontWeight: '500'
+                      }}>
+                        ✅ {chargingStations.length} şarj istasyonu bulundu
+                      </Text>
+                    )}
+                  </View>
+                )}
               </View>
             )}
 
 
 
             {/* Action Buttons */}
-            <View style={{ 
-              flexDirection: 'row', 
-              marginHorizontal: 16, 
-              marginBottom: 16,
-              gap: 8
-            }}>
-              <Button 
-                mode="contained" 
-                onPress={handleStartNavigation}
-                style={{ 
-                  flex: 1, 
-                  backgroundColor: '#FF4500',
-                  borderRadius: 12
-                }}
-                contentStyle={{ paddingVertical: 4 }}
-              >
-                <Text style={{ color: 'white', fontWeight: 'bold' }}>
-                  Navigasyonu Başlat
-                </Text>
-              </Button>
-              
-              <Button 
-                mode="outlined" 
-                onPress={handleSaveRoute}
-                style={{ 
-                  borderColor: '#FF4500',
-                  borderRadius: 12,
-                  paddingHorizontal: 8
-                }}
-                contentStyle={{ paddingVertical: 4 }}
-              >
-                <Text style={{ color: '#FF4500', fontWeight: 'bold' }}>
-                  Kaydet
-                </Text>
-              </Button>
-            </View>
+            {localSelectedRouteIndex !== null && chargingPlan && (
+              <View style={{ 
+                flexDirection: 'row', 
+                marginHorizontal: 16, 
+                marginBottom: 16,
+                gap: 8
+              }}>
+                <Button 
+                  mode="contained" 
+                  onPress={handleStartNavigation}
+                  style={{ 
+                    flex: 1, 
+                    backgroundColor: routeColors[localSelectedRouteIndex % routeColors.length],
+                    borderRadius: 12
+                  }}
+                  contentStyle={{ paddingVertical: 4 }}
+                >
+                  <Text style={{ color: 'white', fontWeight: 'bold' }}>
+                    🧭 Navigasyonu Başlat
+                  </Text>
+                </Button>
+                
+                <Button 
+                  mode="outlined" 
+                  onPress={handleSaveRoute}
+                  style={{ 
+                    borderColor: routeColors[localSelectedRouteIndex % routeColors.length],
+                    borderRadius: 12,
+                    paddingHorizontal: 8
+                  }}
+                  contentStyle={{ paddingVertical: 4 }}
+                >
+                  <Text style={{ 
+                    color: routeColors[localSelectedRouteIndex % routeColors.length], 
+                    fontWeight: 'bold' 
+                  }}>
+                    💾 Kaydet
+                  </Text>
+                </Button>
+              </View>
+            )}
+
+            {/* 🔋 EV Şarj Planı Section */}
+            {chargingPlan && (
+              <View>
+                {/* 📊 Trip Summary (ABRP tarzı) */}
+                <TripSummary 
+                  chargingPlan={chargingPlan}
+                  routeDistanceKm={localSelectedRouteIndex !== null ? routes[localSelectedRouteIndex].distance / 1000 : 0}
+                  drivingTimeMinutes={localSelectedRouteIndex !== null ? Math.round(routes[localSelectedRouteIndex].duration / 60) : 0}
+                />
+
+                {/* 🔌 Charging Stops Details */}
+                {chargingPlan.chargingStops.length > 0 && (
+                  <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
+                    <View style={{ 
+                      flexDirection: 'row', 
+                      justifyContent: 'space-between', 
+                      alignItems: 'center',
+                      marginBottom: 12
+                    }}>
+                      <Text style={{ 
+                        fontSize: 18, 
+                        fontWeight: 'bold', 
+                        color: '#2C3E50'
+                      }}>
+                        🔌 Şarj Durakları
+                      </Text>
+                      <TouchableOpacity 
+                        onPress={() => setShowChargingPlan(!showChargingPlan)}
+                        style={{ 
+                          flexDirection: 'row', 
+                          alignItems: 'center',
+                          paddingHorizontal: 12,
+                          paddingVertical: 6,
+                          backgroundColor: '#F8F9FA',
+                          borderRadius: 8
+                        }}
+                      >
+                        <Text style={{ 
+                          fontSize: 12, 
+                          color: '#6C757D',
+                          marginRight: 4
+                        }}>
+                          {showChargingPlan ? 'Gizle' : 'Göster'}
+                        </Text>
+                        <Text style={{ fontSize: 12, color: '#6C757D' }}>
+                          {showChargingPlan ? '▲' : '▼'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* Charging Stop Cards */}
+                    {showChargingPlan && (
+                      <View>
+                        {chargingPlan.chargingStops.map((stop, index) => (
+                          <ChargingStopCard
+                            key={stop.stationId}
+                            stop={stop}
+                            stopNumber={index + 1}
+                            isLast={index === chargingPlan.chargingStops.length - 1}
+                          />
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* Loading Charging Plan */}
+            {loadingChargingPlan && (
+              <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
+                <Card style={{ backgroundColor: 'white', elevation: 2, borderRadius: 12 }}>
+                  <Card.Content style={{ padding: 16, alignItems: 'center' }}>
+                    <ActivityIndicator size="small" color="#FF4500" style={{ marginBottom: 8 }} />
+                    <Text style={{ fontSize: 14, color: '#7F8C8D' }}>
+                      Şarj planı hesaplanıyor...
+                    </Text>
+                  </Card.Content>
+                </Card>
+              </View>
+            )}
 
             {/* Charging Stations Section */}
             <View style={{ marginHorizontal: 16, marginBottom: 20 }}>

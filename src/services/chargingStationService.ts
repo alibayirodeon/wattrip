@@ -1,4 +1,5 @@
 import axios from 'axios';
+import PQueue from 'p-queue';
 
 const OPEN_CHARGE_MAP_API_KEY = '3b138d13-f1f2-4784-a3d8-1cce443eb600';
 const BASE_URL = 'https://api.openchargemap.io/v3';
@@ -121,10 +122,101 @@ export interface ChargingStationSearchParams {
 class ChargingStationService {
   private apiKey: string;
   private baseUrl: string;
+  private cache: Map<string, { data: ChargingStation[], timestamp: number }> = new Map();
+  private readonly CACHE_DURATION = 5 * 60 * 1000; // 5 dakika cache
+  private readonly queue = new PQueue({ interval: 2000, intervalCap: 1 }); // 1 req/2sec - Çok daha güvenli
 
   constructor() {
     this.apiKey = OPEN_CHARGE_MAP_API_KEY;
     this.baseUrl = BASE_URL;
+  }
+
+  /**
+   * Cache key oluştur - ChatGPT önerisi ile optimize edildi
+   */
+  private getCacheKey(lat: number, lng: number, radius: number): string {
+    // toFixed(3) ile daha iyi cache hit oranı (≈111m tolerans)
+    const roundedLat = lat.toFixed(3);
+    const roundedLng = lng.toFixed(3);
+    return `${roundedLat},${roundedLng}_r${radius}`;
+  }
+
+  /**
+   * 📍 GeoHash tabanlı kümeleme - ChatGPT önerisi
+   */
+  private simpleGeoHash(lat: number, lng: number, precision: number = 5): string {
+    // Basit GeoHash implementasyonu
+    const latBase = Math.floor(lat * Math.pow(10, precision));
+    const lngBase = Math.floor(lng * Math.pow(10, precision));
+    return `${latBase}_${lngBase}`;
+  }
+
+  /**
+   * 🎯 Rota noktalarını GeoHash kümelerine ayır
+   */
+  private clusterPointsByGeoHash(
+    points: Array<{ latitude: number; longitude: number }>,
+    precision: number = 5
+  ): Array<{ representative: { latitude: number; longitude: number }, cluster: string, count: number }> {
+    const clusters = new Map<string, Array<{ latitude: number; longitude: number }>>();
+    
+    // Noktaları GeoHash kümelerine ayır
+    points.forEach(point => {
+      const geoHash = this.simpleGeoHash(point.latitude, point.longitude, precision);
+      if (!clusters.has(geoHash)) {
+        clusters.set(geoHash, []);
+      }
+      clusters.get(geoHash)!.push(point);
+    });
+
+    // Her küme için temsili nokta seç (merkez nokta)
+    const representatives: Array<{ representative: { latitude: number; longitude: number }, cluster: string, count: number }> = [];
+    
+    clusters.forEach((clusterPoints, geoHash) => {
+      const avgLat = clusterPoints.reduce((sum, p) => sum + p.latitude, 0) / clusterPoints.length;
+      const avgLng = clusterPoints.reduce((sum, p) => sum + p.longitude, 0) / clusterPoints.length;
+      
+      representatives.push({
+        representative: { latitude: avgLat, longitude: avgLng },
+        cluster: geoHash,
+        count: clusterPoints.length
+      });
+    });
+
+    return representatives;
+  }
+
+  /**
+   * Cache'den veri al
+   */
+  private getFromCache(key: string): ChargingStation[] | null {
+    const cached = this.cache.get(key);
+    if (cached && (Date.now() - cached.timestamp) < this.CACHE_DURATION) {
+      console.log('🎯 Cache hit:', key);
+      return cached.data;
+    }
+    
+    if (cached) {
+      // Expired cache'i temizle
+      this.cache.delete(key);
+    }
+    
+    return null;
+  }
+
+  /**
+   * Cache'e veri kaydet
+   */
+  private saveToCache(key: string, data: ChargingStation[]): void {
+    this.cache.set(key, { data, timestamp: Date.now() });
+    
+    // Cache size kontrolü (max 100 entry)
+    if (this.cache.size > 100) {
+      const firstKey = this.cache.keys().next().value;
+      if (firstKey) {
+        this.cache.delete(firstKey);
+      }
+    }
   }
 
   /**
@@ -139,8 +231,8 @@ class ChargingStationService {
         return response;
       } catch (error: any) {
         if (error.response?.status === 429) {
-          // Rate limiting error - exponential backoff
-          const delayMs = Math.min(1000 * Math.pow(2, attempt), 8000); // Max 8 saniye
+          // Rate limiting error - çok daha uzun bekle
+          const delayMs = Math.min(5000 * Math.pow(2, attempt), 30000); // 5s-30s arasında
           console.warn(`⏳ Rate limited, waiting ${delayMs}ms before retry ${attempt}/${maxRetries}`);
           await new Promise(resolve => setTimeout(resolve, delayMs));
           
@@ -191,8 +283,8 @@ class ChargingStationService {
 
       console.log('🔌 Searching charging stations with params:', searchParams.toString());
 
-      // Rate limiting için delay ekle
-      await new Promise(resolve => setTimeout(resolve, 800)); // 800ms delay
+      // Rate limiting için delay ekle (paralel çağrılarda azalt)
+      await new Promise(resolve => setTimeout(resolve, 200)); // 200ms delay
       
       // Retry logic ile API çağrısı
       const response = await this.makeAPICallWithRetry(`${this.baseUrl}/poi/?${searchParams.toString()}`);
@@ -218,6 +310,16 @@ class ChargingStationService {
     for (const radius of radiusList) {
       try {
         console.log(`🔍 Trying radius ${radius}km for point (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`);
+        
+        // 🎯 Cache kontrolü
+        const cacheKey = this.getCacheKey(latitude, longitude, radius);
+        const cachedResult = this.getFromCache(cacheKey);
+        
+        if (cachedResult) {
+          console.log(`✅ Found ${cachedResult.length} stations (cached) at ${radius}km radius`);
+          return cachedResult;
+        }
+        
         const stations = await this.searchChargingStations({
           latitude: latitude,
           longitude: longitude,
@@ -226,6 +328,9 @@ class ChargingStationService {
           statusTypeId: 50, // Operational only
           compact: true
         });
+        
+        // 💾 Cache'e kaydet
+        this.saveToCache(cacheKey, stations);
         
         if (stations.length > 0) {
           console.log(`✅ Found ${stations.length} stations at ${radius}km radius`);
@@ -437,42 +542,66 @@ class ChargingStationService {
     try {
       console.log('🔌 Finding charging stations along route with advanced optimization...');
       
-      // Rota boyunca arama noktalarını belirle
-      const numberOfPoints = Math.min(Math.max(Math.floor(routePoints.length / 20), 3), 12);
-      const searchPoints = this.selectSearchPointsAlongRoute(routePoints, numberOfPoints);
+      // 🧠 GeoHash tabanlı akıllı kümeleme (daha az küme, daha güvenli)
+      const clusteredPoints = this.clusterPointsByGeoHash(routePoints, 2); // precision=2 (~10km kümeler)
+      const searchPoints = clusteredPoints.map(cluster => cluster.representative);
+      
+      // Maksimum 5 küme ile sınırla
+      let limitedSearchPoints = searchPoints.slice(0, 5);
+      
+      // 🚨 Emergency fallback: Eğer çok fazla küme varsa basit 3 nokta sistemine geç
+      if (limitedSearchPoints.length > 3) {
+        console.log('⚠️ Too many clusters, falling back to simple 3-point search');
+        const routeLength = routePoints.length;
+        limitedSearchPoints = [
+          routePoints[0], // Başlangıç
+          routePoints[Math.floor(routeLength / 2)], // Orta
+          routePoints[routeLength - 1] // Bitiş
+        ];
+      }
+      
+      console.log(`🧠 GeoHash clustering: ${routePoints.length} points → ${clusteredPoints.length} clusters`);
+      clusteredPoints.forEach((cluster, i) => {
+        console.log(`📍 Cluster ${i + 1}: ${cluster.count} points → (${cluster.representative.latitude.toFixed(4)}, ${cluster.representative.longitude.toFixed(4)})`);
+      });
 
-      console.log(`🧭 Creating ${numberOfPoints} search points from ${routePoints.length} route points`);
-      console.log(`🎯 Searching at ${searchPoints.length} points along route`);
+      console.log(`🎯 Searching at ${limitedSearchPoints.length} clustered points along route (limited for safety)`);
 
       let allStations: ChargingStation[] = [];
-      let stationCount = 0;
 
-      // Her arama noktası için istasyonları topla
-      for (let i = 0; i < searchPoints.length; i++) {
-        const point = searchPoints[i];
-        console.log(`🔍 Search point ${i + 1}/${searchPoints.length}: (${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)})`);
-        
-        try {
-          const stationsAtPoint = await this.searchWithAdaptiveRadius(point.latitude, point.longitude);
+      // 🚀 Rate-limit-aware Queue ile paralel API çağrıları - ChatGPT önerisi
+      console.log(`⚡ Making ${limitedSearchPoints.length} queue-managed API calls...`);
+      
+      const searchPromises = limitedSearchPoints.map((point, i) => {
+        return this.queue.add(async () => {
+          console.log(`🔍 Search point ${i + 1}/${limitedSearchPoints.length}: (${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)})`);
           
-          if (stationsAtPoint.length > 0) {
-            const newStations = stationsAtPoint.filter(station => 
-              !allStations.some(existing => existing.ID === station.ID)
-            );
+          try {
+            const stationsAtPoint = await this.searchWithAdaptiveRadius(point.latitude, point.longitude);
+            console.log(`✅ Point ${i + 1} completed: ${stationsAtPoint.length} stations found`);
             
-            if (newStations.length > 0) {
-              allStations.push(...newStations);
-              console.log(`➕ Added ${newStations.length} new stations from point ${i + 1} (${allStations.length} total)`);
-            }
+            return { point, stations: stationsAtPoint, index: i };
+          } catch (error) {
+            console.warn(`⚠️ Error searching at point ${i + 1}:`, error);
+            return { point, stations: [], index: i };
           }
+        });
+      });
+
+      // Tüm paralel çağrıları bekle
+      const results = await Promise.all(searchPromises);
+      
+      // Sonuçları birleştir
+      for (const result of results) {
+        if (result && result.stations.length > 0) {
+          const newStations = result.stations.filter((station: ChargingStation) => 
+            !allStations.some(existing => existing.ID === station.ID)
+          );
           
-          // Rate limiting için delay
-          if (i < searchPoints.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+          if (newStations.length > 0) {
+            allStations.push(...newStations);
+            console.log(`➕ Added ${newStations.length} new stations from point ${result.index + 1} (${allStations.length} total)`);
           }
-        } catch (error) {
-          console.warn(`⚠️ Error searching at point ${i + 1}:`, error);
-          continue;
         }
       }
 
