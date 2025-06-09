@@ -596,7 +596,7 @@ export function validateChargingPlan(
   };
 }
 
-// Gelişmiş şarj süresi hesaplama (Yeni energyUtils kullanarak)
+// Basit şarj süresi hesaplama
 function calculateAdvancedChargeTime(
   energyCalculator: EnergyCalculator,
   startSOC: number,
@@ -608,22 +608,22 @@ function calculateAdvancedChargeTime(
     chargingStrategy?: 'fast' | 'balanced' | 'gentle';
   } = {}
 ): { timeMinutes: number; averagePowerKW: number; efficiency: number } {
-  const chargingSession = energyCalculator.calculateAdvancedChargingCurve(
-    startSOC,
-    targetSOC,
-    stationPowerKW,
-    {
-      ambientTempC: options.ambientTemp || 20, // Default 20°C
-      batteryCondition: options.batteryCondition || 'good',
-      chargingStrategy: options.chargingStrategy || 'balanced'
-    }
-  );
-
-  const efficiency = (chargingSession.averageChargingPowerKW / stationPowerKW) * 100;
+  // Şarj edilecek enerji miktarı
+  const energyToCharge = energyCalculator.socToEnergy(targetSOC - startSOC);
+  
+  // Basit şarj süresi hesaplama (sabit güç varsayımı)
+  const timeHours = energyToCharge / stationPowerKW;
+  const timeMinutes = Math.round(timeHours * 60);
+  
+  // Ortalama güç basitçe şarjerin gücü
+  const averagePowerKW = stationPowerKW;
+  
+  // Verimlilik %100 varsayalım
+  const efficiency = 100;
 
   return {
-    timeMinutes: chargingSession.chargingTimeMinutes,
-    averagePowerKW: chargingSession.averageChargingPowerKW,
+    timeMinutes,
+    averagePowerKW,
     efficiency
   };
 }

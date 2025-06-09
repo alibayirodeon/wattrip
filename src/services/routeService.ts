@@ -90,6 +90,7 @@ interface RouteServiceResponse {
   routes: RouteInfo[];
   evInfo: RouteEVInfo[];
   hasAlternatives: boolean;
+  error?: string;
 }
 
 class RouteService {
@@ -193,8 +194,34 @@ class RouteService {
         hasAlternatives: routes.length > 1
       };
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Route fetch error:', error);
+      
+      // Hata tipine göre özel mesajlar
+      let errorMessage = 'Rota alınırken bir hata oluştu';
+      
+      if (error.response) {
+        // API'den gelen hata
+        switch (error.response.status) {
+          case 400:
+            errorMessage = 'Geçersiz rota parametreleri';
+            break;
+          case 403:
+            errorMessage = 'API anahtarı geçersiz veya süresi dolmuş';
+            break;
+          case 429:
+            errorMessage = 'Çok fazla istek gönderildi, lütfen bekleyin';
+            break;
+          case 500:
+            errorMessage = 'Sunucu hatası, lütfen daha sonra tekrar deneyin';
+            break;
+        }
+      } else if (error.request) {
+        // İstek yapıldı ama cevap alınamadı
+        errorMessage = 'Sunucuya ulaşılamıyor, internet bağlantınızı kontrol edin';
+      }
+      
+      console.warn('⚠️ Using fallback route due to:', errorMessage);
       
       // Fallback: Basit tek rota oluştur
       console.log('🔄 Creating fallback route...');
@@ -205,7 +232,8 @@ class RouteService {
       return {
         routes: [fallbackRoute],
         evInfo: [fallbackEVInfo],
-        hasAlternatives: false
+        hasAlternatives: false,
+        error: errorMessage
       };
     }
   }

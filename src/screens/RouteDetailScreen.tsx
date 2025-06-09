@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { View, ScrollView, ActivityIndicator, Alert, TouchableOpacity, FlatList } from 'react-native';
-import { Text, Card, Button, Chip, Divider } from 'react-native-paper';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { View, ScrollView, ActivityIndicator, Alert, TouchableOpacity, FlatList, Dimensions, Platform } from 'react-native';
+import { Text, Card, Button, Chip, Divider, Title, Paragraph } from 'react-native-paper';
 import MapView, { Polyline, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 
 import { useLocationStore } from '../context/useLocationStore';
@@ -13,6 +13,13 @@ import ChargingStopCard from '../components/ChargingStopCard';
 import TripSummary from '../components/TripSummary';
 import { generateChargingPlan, ChargingPlanResult, formatChargingPlanForUI, validateChargingPlan } from '../utils/chargingPlanCalculator';
 import { formatDuration } from '../lib/energyUtils';
+
+import { 
+  EnergyCalculator, 
+  planRouteWithCharging, 
+  ChargingStation as NewChargingStation, 
+  RoutePlanResult 
+} from '../lib/energyUtils';
 
 // Google Maps API Key - Production'da environment variable'dan alınmalı
 const GOOGLE_MAPS_API_KEY = 'AIzaSyC1RCUy97Gu_yFZuCSi9lFP2Utv3pm75Mc';
@@ -103,7 +110,71 @@ export default function RouteDetailScreen() {
   const mapRef = useRef<MapView>(null);
 
   // Rota renkleri
-  const routeColors = ['#FF4500', '#2196F3', '#4CAF50', '#FF9800', '#9C27B0'];
+  // Route colors - White primary, blue secondary like in screenshot
+  const routeColors = ['#FFFFFF', '#2196F3', '#4CAF50', '#FF9800', '#9C27B0'];
+
+  /**
+   * 🧠 Test: Yeni Rota Planlama Fonksiyonu
+   */
+  const testNewRoutePlanning = useCallback(() => {
+    console.log('🧠 Testing new route planning function...');
+    
+    // Demo veriler
+    const routeSegments = [120, 150, 180, 157]; // 607km Antalya-Adana
+    const startSOC = 85;
+    const targetSOC = 15;
+    const batteryCapacity = 50; // Peugeot e-2008
+    const consumptionPer100km = 17.8;
+    
+    const demoStations: NewChargingStation[] = [
+      {
+        name: 'Trugo Yüreğir',
+        lat: 37.0234,
+        lng: 35.3311,
+        powerKW: 180,
+        distanceFromStartKm: 340
+      },
+      {
+        name: 'OtoPriz Saray DC1',
+        lat: 36.8868,
+        lng: 30.7027,
+        powerKW: 120,
+        distanceFromStartKm: 115
+      }
+    ];
+
+    try {
+      const result: RoutePlanResult = planRouteWithCharging(
+        routeSegments,
+        startSOC,
+        targetSOC,
+        batteryCapacity,
+        consumptionPer100km,
+        demoStations
+      );
+
+      console.log('✅ Route planning completed!');
+      console.log(`🏁 Can reach destination: ${result.canReachDestination}`);
+      console.log(`🔋 Final SOC: ${result.finalSOC.toFixed(1)}%`);
+      console.log(`⚡ Charging stops: ${result.chargingStops.length}`);
+      console.log(`⏱️ Total charging time: ${result.totalChargingTime}min`);
+
+      Alert.alert(
+        '🧠 Yeni Rota Planlama Testi',
+        `✅ Test tamamlandı!\n\n` +
+        `🏁 Hedefe ulaşabilir: ${result.canReachDestination ? 'Evet' : 'Hayır'}\n` +
+        `🔋 Final SOC: ${result.finalSOC.toFixed(1)}%\n` +
+        `⚡ Şarj durakları: ${result.chargingStops.length}\n` +
+        `⏱️ Toplam şarj süresi: ${result.totalChargingTime}dk\n` +
+        `📊 Tüketim: ${result.totalEnergyConsumed.toFixed(1)}kWh`,
+        [{ text: 'Tamam' }]
+      );
+
+    } catch (error) {
+      console.error('❌ Route planning test failed:', error);
+      Alert.alert('Test Hatası', `Rota planlama testi başarısız: ${error}`);
+    }
+  }, []);
 
   // 🛣️ Multi-route'ları al
   const fetchMultipleRoutes = async () => {
@@ -147,7 +218,7 @@ export default function RouteDetailScreen() {
 
   // 🔌 Seçili rotaya göre şarj istasyonlarını al
   const fetchChargingStationsForSelectedRoute = async () => {
-    if (!routes[selectedRouteIndex]?.polylinePoints || routes[selectedRouteIndex].polylinePoints.length === 0) {
+    if (!routes || !routes[selectedRouteIndex]?.polylinePoints || routes[selectedRouteIndex].polylinePoints.length === 0) {
       return;
     }
 
@@ -231,9 +302,14 @@ export default function RouteDetailScreen() {
       };
     }
 
+    if (!routes || selectedRouteIndex < 0 || selectedRouteIndex >= routes.length) {
+      console.warn('⚠️ Invalid route selection');
+      return;
+    }
+    
     const selectedRoute = routes[selectedRouteIndex];
-    if (!selectedRoute) {
-      console.warn('⚠️ No route selected');
+    if (!selectedRoute || !selectedRoute.distance) {
+      console.warn('⚠️ No route selected or invalid route data');
       return;
     }
 
@@ -263,7 +339,13 @@ export default function RouteDetailScreen() {
           canReachDestination: true,
           batteryAtDestinationPercent: 70,
           totalEnergyConsumedKWh: (routeData.distance / 1000) * (selectedVehicle.consumption / 100),
-          warnings: ['Rota çok kısa, şarj gerekmeyebilir']
+          warnings: ['Rota çok kısa, şarj gerekmeyebilir'],
+          segmentDetails: [],
+          chargingEfficiencyStats: {
+            averageChargingPower: 0,
+            totalEnergyCharged: 0,
+            chargingEfficiency: 0
+          }
         });
         return;
       }
@@ -296,8 +378,21 @@ export default function RouteDetailScreen() {
         ]);
       }
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Error generating charging plan:', error);
+      
+      // Hata tipine göre özel mesajlar
+      let errorMessage = 'Şarj planı hesaplanırken bir hata oluştu';
+      
+      if (error.message) {
+        if (error.message.includes('validation')) {
+          errorMessage = 'Araç veya rota bilgileri geçersiz';
+        } else if (error.message.includes('station')) {
+          errorMessage = 'Şarj istasyonları yüklenemedi';
+        } else if (error.message.includes('battery')) {
+          errorMessage = 'Batarya hesaplamaları yapılamadı';
+        }
+      }
       
       // Fallback plan oluştur
       const fallbackPlan = {
@@ -306,10 +401,23 @@ export default function RouteDetailScreen() {
         canReachDestination: false,
         batteryAtDestinationPercent: 0,
         totalEnergyConsumedKWh: (selectedRoute.distance / 1000) * (selectedVehicle.consumption / 100),
-        warnings: ['Şarj planı hesaplanırken hata oluştu. Lütfen manuel olarak planlayın.']
+        warnings: [errorMessage, 'Lütfen manuel olarak planlayın.'],
+        segmentDetails: [],
+        chargingEfficiencyStats: {
+          averageChargingPower: 0,
+          totalEnergyCharged: 0,
+          chargingEfficiency: 0
+        }
       };
       
       setChargingPlan(fallbackPlan);
+      
+      // Kullanıcıya hata mesajını göster
+      Alert.alert(
+        'Şarj Planı Hatası',
+        errorMessage,
+        [{ text: 'Tamam', style: 'default' }]
+      );
     } finally {
       setLoadingChargingPlan(false);
     }
@@ -437,6 +545,24 @@ export default function RouteDetailScreen() {
     return `${(meters / 1000).toFixed(1)} km`;
   };
 
+  // Calculate time difference from fastest route (like in screenshot +21 min)
+  const getTimeDifference = (routeIndex: number) => {
+    if (routes.length === 0) return '';
+    
+    const fastestRoute = routes.reduce((prev, current) => 
+      prev.duration < current.duration ? prev : current
+    );
+    
+    const currentRoute = routes[routeIndex];
+    const diffMinutes = Math.round((currentRoute.duration - fastestRoute.duration) / 60);
+    
+    if (diffMinutes === 0) {
+      return ''; // Fastest route, no indicator
+    }
+    
+    return `+${diffMinutes} min`;
+  };
+
   const handleStartNavigation = () => {
     if (routes[selectedRouteIndex]) {
       Alert.alert(
@@ -472,19 +598,19 @@ export default function RouteDetailScreen() {
 
   const getMarkerColor = (level: 'ac' | 'fast' | 'ultra' | 'unknown'): string => {
     switch (level) {
-      case 'ac': return '#2196F3';      // Blue
-      case 'fast': return '#FF9800';    // Orange  
-      case 'ultra': return '#4CAF50';   // Green
-      default: return '#9E9E9E';        // Gray
+      case 'ac': return '#27AE60';      // Green like in screenshot
+      case 'fast': return '#FF9800';    // Orange like in screenshot
+      case 'ultra': return '#E74C3C';   // Red like in screenshot  
+      default: return '#95A5A6';        // Gray for unknown
     }
   };
 
   const getPowerLevelBadge = (level: 'ac' | 'fast' | 'ultra' | 'unknown'): { emoji: string, text: string, color: string } => {
     switch (level) {
-      case 'ac': return { emoji: '🔵', text: 'AC (≤22kW)', color: '#2196F3' };
+      case 'ac': return { emoji: '🟢', text: 'AC (≤22kW)', color: '#27AE60' };
       case 'fast': return { emoji: '🟠', text: 'DC Fast (23-149kW)', color: '#FF9800' };
-      case 'ultra': return { emoji: '🟢', text: 'DC Ultra (≥150kW)', color: '#4CAF50' };
-      default: return { emoji: '⚪', text: 'Bilinmiyor', color: '#9E9E9E' };
+      case 'ultra': return { emoji: '🔴', text: 'DC Ultra (≥150kW)', color: '#E74C3C' };
+      default: return { emoji: '⚪', text: 'Bilinmiyor', color: '#95A5A6' };
     }
   };
 
@@ -502,7 +628,7 @@ export default function RouteDetailScreen() {
     
     return (
       <Marker
-        key={`charging-${station.ID || index}`}
+        key={`charging-${station.ID || `unknown-${index}`}-${index}`}
         coordinate={{
           latitude: station.AddressInfo.Latitude,
           longitude: station.AddressInfo.Longitude,
@@ -642,13 +768,16 @@ export default function RouteDetailScreen() {
           {routes.map((route, index) => {
             const isSelected = localSelectedRouteIndex === index;
             const routeColor = routeColors[index % routeColors.length];
+            // Şarj planı varsa seçili rota haricindeki rotaları %20 opacity ile göster
+            const hasChargingPlan = chargingPlan !== null;
+            const shouldDimRoute = !isSelected && (hasChargingPlan || localSelectedRouteIndex !== null);
             
             return (
               <React.Fragment key={`route-${index}`}>
                 {/* Gölge */}
                 <Polyline 
                   coordinates={route.polylinePoints} 
-                  strokeColor={isSelected ? "rgba(0,0,0,0.3)" : "rgba(0,0,0,0.15)"} 
+                  strokeColor={isSelected ? "rgba(0,0,0,0.3)" : (shouldDimRoute ? "rgba(0,0,0,0.06)" : "rgba(0,0,0,0.15)")} 
                   strokeWidth={isSelected ? 16 : 8}
                   lineCap="round"
                   lineJoin="round"
@@ -657,12 +786,23 @@ export default function RouteDetailScreen() {
                 {/* Ana çizgi */}
                 <Polyline 
                   coordinates={route.polylinePoints} 
-                  strokeColor={isSelected ? routeColor : `${routeColor}50`} 
+                  strokeColor={isSelected ? (routeColor === '#FFFFFF' ? '#FFFFFF' : routeColor) : (shouldDimRoute ? `${routeColor}33` : `${routeColor}80`)} 
                   strokeWidth={isSelected ? 12 : 4}
                   lineCap="round"
                   lineJoin="round"
                   zIndex={850 + index}
                 />
+                {/* Extra border for white route visibility */}
+                {isSelected && routeColor === '#FFFFFF' && (
+                  <Polyline 
+                    coordinates={route.polylinePoints} 
+                    strokeColor="rgba(0,0,0,0.8)" 
+                    strokeWidth={14}
+                    lineCap="round"
+                    lineJoin="round"
+                    zIndex={840 + index}
+                  />
+                )}
               </React.Fragment>
             );
           })}
@@ -670,6 +810,7 @@ export default function RouteDetailScreen() {
           {/* Başlangıç Marker */}
           {fromCoord && (
             <Marker 
+              key="start-marker"
               coordinate={{ latitude: fromCoord[0], longitude: fromCoord[1] }}
               title="Başlangıç"
               description={from}
@@ -697,6 +838,7 @@ export default function RouteDetailScreen() {
           {/* Bitiş Marker */}
           {toCoord && (
             <Marker 
+              key="end-marker"
               coordinate={{ latitude: toCoord[0], longitude: toCoord[1] }}
               title="Varış"
               description={to}
@@ -729,7 +871,7 @@ export default function RouteDetailScreen() {
           {/* Şarj Planı Durakları - Özel Marker'lar */}
           {chargingPlan && chargingPlan.chargingStops.map((stop, index) => (
             <Marker
-              key={`charging-plan-${stop.stationId}`}
+              key={`charging-plan-${stop.stationId}-${index}`}
               coordinate={stop.stopCoord}
               title={`🔋 Durak ${index + 1}: ${stop.name}`}
               description={`⚡ ${stop.stationPowerKW}kW | ⏱️ ${stop.estimatedChargeTimeMinutes}dk | 🔋 ${stop.batteryBeforeStopPercent}% → ${stop.batteryAfterStopPercent}%`}
@@ -894,13 +1036,39 @@ export default function RouteDetailScreen() {
                           {formatDistance(item.distance)}
                         </Text>
                         
-                        <Text style={{ 
-                          fontSize: 14,
-                          color: isSelected ? 'rgba(255,255,255,0.9)' : '#7F8C8D',
+                        <View style={{ 
+                          flexDirection: 'row', 
+                          alignItems: 'center',
                           marginBottom: 8
                         }}>
-                          {formatDuration(item.duration)}
-                        </Text>
+                          <Text style={{ 
+                            fontSize: 14,
+                            color: isSelected ? 'rgba(255,255,255,0.9)' : '#7F8C8D',
+                            marginRight: 8
+                          }}>
+                            {formatDuration(item.duration)}
+                          </Text>
+                          
+                          {/* Time difference indicator like in screenshot */}
+                          {getTimeDifference(index) && (
+                            <View style={{
+                              backgroundColor: isSelected ? 'rgba(255,255,255,0.2)' : '#F8F9FA',
+                              paddingHorizontal: 8,
+                              paddingVertical: 2,
+                              borderRadius: 12,
+                              borderWidth: 1,
+                              borderColor: isSelected ? 'rgba(255,255,255,0.3)' : '#E9ECEF'
+                            }}>
+                              <Text style={{
+                                fontSize: 12,
+                                color: isSelected ? 'rgba(255,255,255,0.9)' : '#6C757D',
+                                fontWeight: '600'
+                              }}>
+                                {getTimeDifference(index)}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
                         
                         <Text style={{ 
                           fontSize: 12,
@@ -993,7 +1161,47 @@ export default function RouteDetailScreen() {
               </View>
             )}
 
-
+            {/* Test Button for New Route Planning */}
+            {routes && routes.length > 0 && (
+              <Card style={{ 
+                marginHorizontal: 16, 
+                marginBottom: 12, 
+                backgroundColor: 'white', 
+                elevation: 2, 
+                borderRadius: 12,
+                marginTop: 10 
+              }}>
+                <Card.Content>
+                  <Title style={{ 
+                    fontSize: 18, 
+                    fontWeight: 'bold', 
+                    color: '#2C3E50',
+                    marginBottom: 8
+                  }}>
+                    🧠 Yeni Rota Planlama Testi
+                  </Title>
+                  <Paragraph style={{ 
+                    fontSize: 14, 
+                    color: '#7F8C8D',
+                    marginBottom: 12
+                  }}>
+                    Segment bazlı enerji tüketimi ve otomatik şarj durakları ile gelişmiş planlama testi
+                  </Paragraph>
+                  <Button
+                    mode="contained"
+                    onPress={testNewRoutePlanning}
+                    style={{ 
+                      backgroundColor: '#FF4500',
+                      borderRadius: 8,
+                      marginTop: 10 
+                    }}
+                    icon="test-tube"
+                  >
+                    Yeni Algoritma Testini Çalıştır
+                  </Button>
+                </Card.Content>
+              </Card>
+            )}
 
             {/* Action Buttons */}
             {localSelectedRouteIndex !== null && chargingPlan && (
@@ -1093,7 +1301,7 @@ export default function RouteDetailScreen() {
                       <View>
                         {chargingPlan.chargingStops.map((stop, index) => (
                           <ChargingStopCard
-                            key={stop.stationId}
+                            key={`charging-stop-${stop.stationId}-${index}`}
                             stop={stop}
                             stopNumber={index + 1}
                             isLast={index === chargingPlan.chargingStops.length - 1}
@@ -1206,7 +1414,7 @@ export default function RouteDetailScreen() {
                       
                       return (
                         <Card 
-                          key={station.ID || index} 
+                          key={`station-${station.ID || 'unknown'}-${index}`} 
                           style={{ 
                             marginBottom: 8, 
                             backgroundColor: 'white',

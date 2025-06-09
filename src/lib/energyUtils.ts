@@ -27,6 +27,40 @@ export interface SegmentSOC {
   description: string;
 }
 
+// 🚗 Rota ve Şarj Planlama için yeni interface'ler
+export interface RouteSegment {
+  segmentIndex: number;
+  distanceKm: number;
+  cumulativeDistanceKm: number;
+}
+
+export interface ChargingStation {
+  name: string;
+  lat: number;
+  lng: number;
+  powerKW: number;
+  distanceFromStartKm?: number;
+}
+
+export interface ChargingStop {
+  stationName: string;
+  distanceFromStartKm: number;
+  entrySOC: number;
+  exitSOC: number;
+  energyAddedKWh: number;
+  chargingTimeMinutes: number;
+  stationPowerKW: number;
+}
+
+export interface RoutePlanResult {
+  chargingStops: ChargingStop[];
+  finalSOC: number;
+  canReachDestination: boolean;
+  totalChargingTime: number;
+  totalEnergyConsumed: number;
+  warnings: string[];
+}
+
 /**
  * 🔋 SOC (State of Charge) hesaplamaları
  */
@@ -44,224 +78,295 @@ export class EnergyCalculator {
   }
 
   /**
-   * SOC'den enerji miktarı hesapla
+   * SOC'dan enerji miktarı hesapla
    */
   socToEnergy(socPercent: number): number {
     return (socPercent / 100) * this.batteryCapacityKWh;
   }
 
   /**
-   * SOC'den menzil hesapla
+   * Mesafe için gerekli enerji hesapla
    */
-  socToRange(socPercent: number): number {
+  calculateEnergyForDistance(distanceKm: number): number {
+    return (distanceKm * this.consumptionKWhPer100km) / 100;
+  }
+
+  /**
+   * SOC'dan menzil hesapla
+   */
+  calculateRange(socPercent: number): number {
     const energyKWh = this.socToEnergy(socPercent);
     return (energyKWh * 100) / this.consumptionKWhPer100km;
   }
 
   /**
-   * Mesafeden enerji tüketimi hesapla
+   * Mesafe için gereken enerji tüketimini hesapla (kWh)
+   * Alias for calculateEnergyForDistance for consistency
    */
-  distanceToEnergyConsumption(distanceKm: number): number {
-    return (distanceKm * this.consumptionKWhPer100km) / 100;
+  distanceToEnergyConsumption(distanceKm: number | undefined | null): number {
+    // Tip kontrolü ve varsayılan değer
+    const safeDistance = typeof distanceKm === 'number' && !isNaN(distanceKm) 
+      ? Math.max(0, distanceKm) 
+      : 0;
+    
+    return this.calculateEnergyForDistance(safeDistance);
   }
 
   /**
-   * 📍 Segment bazlı SOC düşüşü hesaplama
+   * SOC'dan menzil hesapla (km)
+   * Alias for calculateRange for consistency
+   */
+  socToRange(socPercent: number | undefined | null): number {
+    // Tip kontrolü ve varsayılan değer
+    const safeSOC = typeof socPercent === 'number' && !isNaN(socPercent)
+      ? Math.max(0, Math.min(100, socPercent))
+      : 0;
+    
+    return this.calculateRange(safeSOC);
+  }
+
+  /**
+   * Segment bazlı SOC düşüşü hesapla
+   * @param startSOC Başlangıç SOC değeri (%)
+   * @param distanceKm Segment mesafesi (km)
+   * @param segmentIndex Segment indeksi (opsiyonel)
+   * @returns SegmentSOC objesi
    */
   calculateSegmentSOC(
     startSOC: number,
-    segmentDistances: number[],
-    segmentDescriptions?: string[]
-  ): SegmentSOC[] {
-    const segments: SegmentSOC[] = [];
-    let currentSOC = startSOC;
+    distanceKm: number | undefined | null,
+    segmentIndex: number = 0
+  ): SegmentSOC {
+    // distanceKm için güvenli dönüşüm ve varsayılan değer
+    const safeDistanceKm = typeof distanceKm === 'number' && !isNaN(distanceKm) 
+      ? distanceKm 
+      : 0;
 
-    segmentDistances.forEach((distance, index) => {
-      const energyConsumed = this.distanceToEnergyConsumption(distance);
-      const socConsumed = this.energyToSOC(energyConsumed);
-      const segmentStartSOC = currentSOC;
-      const segmentEndSOC = Math.max(0, currentSOC - socConsumed);
+    // Enerji hesaplamaları
+    const energyConsumed = this.calculateEnergyForDistance(safeDistanceKm);
+    const socDrop = this.energyToSOC(energyConsumed);
+    const endSOC = Math.max(0, startSOC - socDrop);
 
-      segments.push({
-        segmentIndex: index + 1,
-        startSOC: segmentStartSOC,
-        endSOC: segmentEndSOC,
-        distanceKm: distance,
-        energyConsumedKWh: energyConsumed,
-        description: segmentDescriptions?.[index] || `Segment ${index + 1}`
-      });
-
-      currentSOC = segmentEndSOC;
-    });
-
-    return segments;
-  }
-
-  /**
-   * 🔌 Gelişmiş şarj eğrisi hesaplama (Gerçek EV davranışı)
-   */
-  calculateAdvancedChargingCurve(
-    startSOC: number,
-    targetSOC: number,
-    chargerPowerKW: number,
-    options: {
-      batteryTempC?: number; // Batarya sıcaklığı
-      ambientTempC?: number; // Ortam sıcaklığı
-      batteryCondition?: 'new' | 'good' | 'fair' | 'poor'; // Batarya durumu
-      chargingStrategy?: 'fast' | 'balanced' | 'gentle'; // Şarj stratejisi
-    } = {}
-  ): ChargingSession {
-    const startEnergyKWh = this.socToEnergy(startSOC);
-    const targetEnergyKWh = Math.min(
-      this.socToEnergy(targetSOC),
-      this.batteryCapacityKWh
-    );
-    const energyAddedKWh = targetEnergyKWh - startEnergyKWh;
-
-    if (energyAddedKWh <= 0) {
-      return {
-        startSOC,
-        endSOC: startSOC,
-        energyAddedKWh: 0,
-        chargingTimeMinutes: 0,
-        chargerPowerKW,
-        averageChargingPowerKW: 0
-      };
-    }
-
-    // 📈 Gerçek şarj eğrisi simülasyonu
-    let powerReductionFactor = 1.0;
-
-    // SOC bazlı güç azaltması (Non-linear curve)
-    if (startSOC >= 80) {
-      powerReductionFactor *= 0.2; // %80+ çok yavaş (Gerçek EV davranışı)
-    } else if (startSOC >= 70) {
-      powerReductionFactor *= 0.35; // %70-80 yavaş
-    } else if (startSOC >= 60) {
-      powerReductionFactor *= 0.55; // %60-70 orta-yavaş
-    } else if (startSOC >= 40) {
-      powerReductionFactor *= 0.75; // %40-60 orta
-    } else if (startSOC >= 20) {
-      powerReductionFactor *= 0.95; // %20-40 neredeyse maksimum
-    }
-    // %0-20 maksimum hızda
-
-    // Target SOC'ye doğru ilerlerken güç progressively azalır
-    const avgSOC = (startSOC + targetSOC) / 2;
-    if (avgSOC > startSOC) {
-      // Şarj boyunca ortalama SOC yükselecekse ek azaltma
-      if (avgSOC >= 75) {
-        powerReductionFactor *= 0.8;
-      } else if (avgSOC >= 65) {
-        powerReductionFactor *= 0.9;
-      }
-    }
-
-    // 🌡️ Sıcaklık etkisi (Daha detaylı)
-    if (options.batteryTempC !== undefined) {
-      const batteryTemp = options.batteryTempC;
-      if (batteryTemp < 0) {
-        powerReductionFactor *= 0.4; // Çok soğuk
-      } else if (batteryTemp < 10) {
-        powerReductionFactor *= 0.6; // Soğuk
-      } else if (batteryTemp > 40) {
-        powerReductionFactor *= 0.7; // Sıcak (thermal throttling)
-      } else if (batteryTemp > 30) {
-        powerReductionFactor *= 0.85; // Biraz sıcak
-      }
-      // 10-30°C optimal aralık
-    }
-
-    if (options.ambientTempC !== undefined) {
-      const ambientTemp = options.ambientTempC;
-      if (ambientTemp < -10) {
-        powerReductionFactor *= 0.75; // Çok soğuk hava
-      } else if (ambientTemp > 35) {
-        powerReductionFactor *= 0.9; // Sıcak hava
-      }
-    }
-
-    // 🔋 Batarya durumu etkisi
-    if (options.batteryCondition) {
-      const conditionFactors = {
-        'new': 1.0,
-        'good': 0.95,
-        'fair': 0.85,
-        'poor': 0.7
-      };
-      powerReductionFactor *= conditionFactors[options.batteryCondition];
-    }
-
-    // ⚡ Şarj stratejisi etkisi
-    if (options.chargingStrategy) {
-      const strategyFactors = {
-        'fast': 1.0, // Maksimum hız
-        'balanced': 0.85, // Dengeli (batarya ömrü koruma)
-        'gentle': 0.65 // Yumuşak (maksimum batarya ömrü)
-      };
-      powerReductionFactor *= strategyFactors[options.chargingStrategy];
-    }
-
-    const averageChargingPowerKW = chargerPowerKW * powerReductionFactor;
-    const chargingTimeHours = energyAddedKWh / averageChargingPowerKW;
-    const chargingTimeMinutes = Math.round(chargingTimeHours * 60);
+    // Güvenli string formatlaması
+    const formattedDistance = safeDistanceKm.toFixed(1);
+    const formattedSocDrop = socDrop.toFixed(1);
 
     return {
+      segmentIndex,
       startSOC,
-      endSOC: this.energyToSOC(targetEnergyKWh),
-      energyAddedKWh,
-      chargingTimeMinutes,
-      chargerPowerKW,
-      averageChargingPowerKW
+      endSOC,
+      distanceKm: safeDistanceKm,
+      energyConsumedKWh: energyConsumed,
+      description: `Segment ${segmentIndex + 1}: ${formattedDistance}km → ${formattedSocDrop}% SOC drop`
     };
   }
+}
 
-  /**
-   * 🔌 Gerçekçi şarj süresi hesaplama (ABRP tarzı) - Legacy method
-   */
-  calculateChargingTime(
-    startSOC: number,
-    targetSOC: number,
-    chargerPowerKW: number,
-    options: {
-      maxChargeSpeed?: boolean; // Yüksek SOC'de yavaşlama
-      temperature?: number; // Hava sıcaklığı etkisi
-      batteryTemp?: number; // Batarya sıcaklığı
-    } = {}
-  ): ChargingSession {
-    // Yeni gelişmiş metoda yönlendir
-    return this.calculateAdvancedChargingCurve(startSOC, targetSOC, chargerPowerKW, {
-      ambientTempC: options.temperature,
-      batteryTempC: options.batteryTemp,
-      chargingStrategy: options.maxChargeSpeed === false ? 'gentle' : 'fast'
-    });
-  }
+/**
+ * 🚗 Gelişmiş Rota ve Şarj Planlama Fonksiyonu
+ * Segment bazlı enerji tüketimi ve otomatik şarj durakları
+ */
+export function planRouteWithCharging(
+  routeSegments: number[], // Her segmentin mesafesi (km)
+  startSOC: number, // Başlangıç batarya %
+  targetSOC: number, // Minimum varış batarya %
+  batteryCapacity: number, // Batarya kapasitesi (kWh)
+  consumptionPer100km: number, // Enerji tüketimi (kWh/100km)
+  stations: ChargingStation[] // Şarj istasyonları
+): RoutePlanResult {
+  
+  const energyCalc = new EnergyCalculator(batteryCapacity, consumptionPer100km);
+  const chargingStops: ChargingStop[] = [];
+  const warnings: string[] = [];
+  
+  let currentSOC = startSOC;
+  let cumulativeDistance = 0;
+  let totalChargingTime = 0;
+  let totalEnergyConsumed = 0;
 
-  /**
-   * 🎯 Optimal şarj seviyesi hesaplama
-   */
-  calculateOptimalChargeLevel(
-    currentSOC: number,
-    remainingDistanceKm: number,
-    nextStationDistanceKm?: number
-  ): number {
-    const energyNeededForRemaining = this.distanceToEnergyConsumption(remainingDistanceKm);
-    const socNeededForRemaining = this.energyToSOC(energyNeededForRemaining);
+  console.log(`🚗 Route planning started: ${routeSegments.length} segments, ${startSOC}% → ${targetSOC}%`);
+
+  // Her segment için planlama yap
+  for (let i = 0; i < routeSegments.length; i++) {
+    const segmentDistance = routeSegments[i];
+    const segmentEnergy = energyCalc.calculateEnergyForDistance(segmentDistance);
+    const segmentSOCDrop = energyCalc.energyToSOC(segmentEnergy);
     
-    // Güvenlik marjı ekle
-    const safetyMargin = 15; // %15 güvenlik marjı
-    let targetSOC = socNeededForRemaining + safetyMargin;
+    console.log(`📍 Segment ${i + 1}: ${segmentDistance}km, ${segmentSOCDrop.toFixed(1)}% SOC drop`);
+    
+    // Bu segmenti tamamladıktan sonraki SOC
+    const socAfterSegment = currentSOC - segmentSOCDrop;
+    cumulativeDistance += segmentDistance;
+    totalEnergyConsumed += segmentEnergy;
 
-    // Bir sonraki istasyon varsa, ona kadar yetecek kadar şarj et
-    if (nextStationDistanceKm) {
-      const energyForNextStation = this.distanceToEnergyConsumption(nextStationDistanceKm);
-      const socForNextStation = this.energyToSOC(energyForNextStation);
-      targetSOC = Math.max(targetSOC, socForNextStation + safetyMargin);
+    // Eğer SOC çok düşükse şarj gerekli
+    const remainingDistance = routeSegments.slice(i + 1).reduce((sum, dist) => sum + dist, 0);
+    const energyNeededForRemaining = energyCalc.calculateEnergyForDistance(remainingDistance);
+    const socNeededForRemaining = energyCalc.energyToSOC(energyNeededForRemaining);
+    const requiredSOC = socNeededForRemaining + targetSOC; // Hedef + kalan yol
+
+    console.log(`🔋 After segment: SOC ${socAfterSegment.toFixed(1)}%, Required: ${requiredSOC.toFixed(1)}%`);
+
+    // Şarj gerekli mi kontrol et
+    if (socAfterSegment < requiredSOC && remainingDistance > 0) {
+      console.log(`⚡ Charging needed! Current: ${socAfterSegment.toFixed(1)}%, Required: ${requiredSOC.toFixed(1)}%`);
+      
+      // En yakın istasyonu bul
+      const nearbyStations = stations
+        .map(station => ({
+          ...station,
+          distanceFromCurrentPoint: Math.abs((station.distanceFromStartKm || 0) - cumulativeDistance)
+        }))
+        .filter(station => station.distanceFromCurrentPoint <= 50) // 50km yarıçap
+        .sort((a, b) => a.distanceFromCurrentPoint - b.distanceFromCurrentPoint);
+
+      if (nearbyStations.length === 0) {
+        warnings.push(`⚠️ No charging stations within 50km at ${cumulativeDistance}km`);
+        continue;
+      }
+
+      const selectedStation = nearbyStations[0];
+      
+      // Şarj miktarını hesapla (%80 sınırı)
+      const maxSOC = 80;
+      const targetChargeSOC = Math.min(maxSOC, requiredSOC + 10); // 10% buffer
+      const energyToAdd = energyCalc.socToEnergy(targetChargeSOC - socAfterSegment);
+      
+      // Şarj süresi hesapla (gerçek şarj eğrisi)
+      const chargingTime = calculateAdvancedChargeTime(
+        energyCalc,
+        socAfterSegment,
+        targetChargeSOC,
+        selectedStation.powerKW,
+        {
+          ambientTemp: 20,
+          batteryCondition: 'good',
+          chargingStrategy: 'balanced'
+        }
+      );
+
+      const chargingStop: ChargingStop = {
+        stationName: selectedStation.name,
+        distanceFromStartKm: selectedStation.distanceFromStartKm || cumulativeDistance,
+        entrySOC: socAfterSegment,
+        exitSOC: targetChargeSOC,
+        energyAddedKWh: energyToAdd,
+        chargingTimeMinutes: chargingTime.chargingTimeMinutes,
+        stationPowerKW: selectedStation.powerKW
+      };
+
+      chargingStops.push(chargingStop);
+      totalChargingTime += chargingTime.chargingTimeMinutes;
+      currentSOC = targetChargeSOC;
+
+      console.log(`🔌 Added charging stop: ${selectedStation.name}`);
+      console.log(`   Entry: ${socAfterSegment.toFixed(1)}% → Exit: ${targetChargeSOC.toFixed(1)}%`);
+      console.log(`   Energy: ${energyToAdd.toFixed(1)}kWh, Time: ${chargingTime.chargingTimeMinutes}min`);
+    } else {
+      // Şarj gerekmiyorsa SOC'u güncelle
+      currentSOC = socAfterSegment;
     }
-
-    // Maksimum %85'e kadar şarj et (hız için)
-    return Math.min(85, Math.max(currentSOC, targetSOC));
   }
+
+  const canReachDestination = currentSOC >= targetSOC;
+  
+  if (!canReachDestination) {
+    warnings.push(`❌ Cannot reach destination! Final SOC: ${currentSOC.toFixed(1)}%, Target: ${targetSOC}%`);
+  }
+
+  const result: RoutePlanResult = {
+    chargingStops,
+    finalSOC: currentSOC,
+    canReachDestination,
+    totalChargingTime,
+    totalEnergyConsumed,
+    warnings
+  };
+
+  console.log(`🏁 Route planning completed:`);
+  console.log(`   Final SOC: ${currentSOC.toFixed(1)}%`);
+  console.log(`   Charging stops: ${chargingStops.length}`);
+  console.log(`   Total charging time: ${totalChargingTime}min`);
+  console.log(`   Can reach destination: ${canReachDestination}`);
+
+  return result;
+}
+
+/**
+ * 🔋 Gelişmiş şarj süresi hesaplama
+ * SOC'ye bağlı şarj eğrisi kullanır
+ */
+export function calculateAdvancedChargeTime(
+  energyCalc: EnergyCalculator,
+  startSOC: number,
+  targetSOC: number,
+  chargerPowerKW: number,
+  conditions: {
+    ambientTemp?: number;
+    batteryCondition?: 'excellent' | 'good' | 'average' | 'poor';
+    chargingStrategy?: 'fast' | 'balanced' | 'gentle';
+  } = {}
+): ChargingSession {
+  
+  const {
+    ambientTemp = 20,
+    batteryCondition = 'good',
+    chargingStrategy = 'balanced'
+  } = conditions;
+
+  // SOC bazlı şarj gücü multiplier'ı
+  const getSOCMultiplier = (soc: number): number => {
+    if (soc < 20) return 0.95; // Soğuk batarya
+    if (soc < 40) return 1.0;  // Optimum
+    if (soc < 60) return 0.98; // İyi
+    if (soc < 75) return 0.85; // Yavaşlamaya başlıyor
+    if (soc < 85) return 0.65; // Belirgin yavaşlama
+    return 0.35; // Çok yavaş (80%+)
+  };
+
+  // Sıcaklık etkisi
+  const tempMultiplier = ambientTemp < 0 ? 0.7 : 
+                        ambientTemp < 10 ? 0.85 : 
+                        ambientTemp > 35 ? 0.9 : 1.0;
+
+  // Batarya durumu etkisi
+  const conditionMultiplier = {
+    excellent: 1.0,
+    good: 0.95,
+    average: 0.85,
+    poor: 0.7
+  }[batteryCondition];
+
+  // Strateji etkisi
+  const strategyMultiplier = {
+    fast: 1.0,
+    balanced: 0.9,
+    gentle: 0.75
+  }[chargingStrategy];
+
+  // Ortalama şarj gücü hesapla
+  const avgSOC = (startSOC + targetSOC) / 2;
+  const socMultiplier = getSOCMultiplier(avgSOC);
+  
+  const effectivePower = chargerPowerKW * 
+                        socMultiplier * 
+                        tempMultiplier * 
+                        conditionMultiplier * 
+                        strategyMultiplier;
+
+  // Enerji ve süre hesapla
+  const energyToAdd = energyCalc.socToEnergy(targetSOC - startSOC);
+  const chargingTimeHours = energyToAdd / effectivePower;
+  const chargingTimeMinutes = Math.ceil(chargingTimeHours * 60);
+
+  return {
+    startSOC,
+    endSOC: targetSOC,
+    energyAddedKWh: energyToAdd,
+    chargingTimeMinutes,
+    chargerPowerKW: chargerPowerKW,
+    averageChargingPowerKW: effectivePower
+  };
 }
 
 /**
