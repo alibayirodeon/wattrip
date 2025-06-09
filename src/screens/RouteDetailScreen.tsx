@@ -648,8 +648,8 @@ export default function RouteDetailScreen() {
                 {/* Gölge */}
                 <Polyline 
                   coordinates={route.polylinePoints} 
-                  strokeColor="rgba(0,0,0,0.3)" 
-                  strokeWidth={isSelected ? 16 : 12}
+                  strokeColor={isSelected ? "rgba(0,0,0,0.3)" : "rgba(0,0,0,0.15)"} 
+                  strokeWidth={isSelected ? 16 : 8}
                   lineCap="round"
                   lineJoin="round"
                   zIndex={800 + index}
@@ -657,8 +657,8 @@ export default function RouteDetailScreen() {
                 {/* Ana çizgi */}
                 <Polyline 
                   coordinates={route.polylinePoints} 
-                  strokeColor={isSelected ? routeColor : `${routeColor}80`} 
-                  strokeWidth={isSelected ? 12 : 6}
+                  strokeColor={isSelected ? routeColor : `${routeColor}50`} 
+                  strokeWidth={isSelected ? 12 : 4}
                   lineCap="round"
                   lineJoin="round"
                   zIndex={850 + index}
