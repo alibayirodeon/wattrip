@@ -494,6 +494,12 @@ export default function RouteDetailScreen() {
     const powerLevel = getPowerLevel(station);
     const markerColor = getMarkerColor(powerLevel);
     
+    // Şarj planında seçili istasyon mu kontrol et
+    const chargingStopIndex = chargingPlan?.chargingStops?.findIndex(stop => 
+      stop.stationId === station.ID
+    );
+    const isInChargingPlan = chargingStopIndex !== undefined && chargingStopIndex >= 0;
+    
     return (
       <Marker
         key={`charging-${station.ID || index}`}
@@ -502,26 +508,32 @@ export default function RouteDetailScreen() {
           longitude: station.AddressInfo.Longitude,
         }}
         title={station.AddressInfo.Title || 'Şarj İstasyonu'}
-        description={`${station.AddressInfo.AddressLine1 || ''} - ${getPowerLevelBadge(powerLevel).text}`}
-        zIndex={800}
+        description={`${station.AddressInfo.AddressLine1 || ''} - ${getPowerLevelBadge(powerLevel).text}${isInChargingPlan ? ' (Planlanan Durak)' : ''}`}
+        zIndex={isInChargingPlan ? 900 : 800}
       >
         <View style={{ 
-          backgroundColor: markerColor, 
-          padding: 8, 
-          borderRadius: 20,
-          borderWidth: 3,
-          borderColor: 'white',
-          elevation: 5,
+          backgroundColor: isInChargingPlan ? '#FF4500' : markerColor, 
+          padding: isInChargingPlan ? 10 : 8, 
+          borderRadius: isInChargingPlan ? 25 : 20,
+          borderWidth: isInChargingPlan ? 4 : 3,
+          borderColor: isInChargingPlan ? '#FFF' : 'white',
+          elevation: isInChargingPlan ? 8 : 5,
           shadowColor: '#000',
-          shadowOffset: { width: 0, height: 2 },
-          shadowOpacity: 0.3,
-          shadowRadius: 3,
+          shadowOffset: { width: 0, height: isInChargingPlan ? 3 : 2 },
+          shadowOpacity: isInChargingPlan ? 0.4 : 0.3,
+          shadowRadius: isInChargingPlan ? 5 : 3,
           alignItems: 'center',
           justifyContent: 'center',
-          minWidth: 28,
-          minHeight: 28,
+          minWidth: isInChargingPlan ? 36 : 28,
+          minHeight: isInChargingPlan ? 36 : 28,
         }}>
-          <Text style={{ color: 'white', fontSize: 14, fontWeight: 'bold' }}>⚡</Text>
+          <Text style={{ 
+            color: 'white', 
+            fontSize: isInChargingPlan ? 16 : 14, 
+            fontWeight: 'bold' 
+          }}>
+            {isInChargingPlan ? (chargingStopIndex + 1).toString() : '⚡'}
+          </Text>
         </View>
       </Marker>
     );
