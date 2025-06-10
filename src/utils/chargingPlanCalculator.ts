@@ -443,7 +443,10 @@ export function generateChargingPlan({
     segmentDescriptions.push('Başlangıç → Hedef (Tek segment)');
   }
 
-  const segmentDetails = energyCalc.calculateSegmentSOC(startChargePercent, segmentDistances, segmentDescriptions);
+  // DÜZELTME: Her segment için ayrı ayrı SOC hesapla
+  const segmentDetails: SegmentSOC[] = segmentDistances.map((distance, i) =>
+    energyCalc.calculateSegmentSOC(startChargePercent, distance, i)
+  );
 
   console.log('🏁 Şarj planı tamamlandı:', {
     canReachDestination,

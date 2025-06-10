@@ -120,15 +120,25 @@ export interface ChargingStationSearchParams {
 }
 
 class ChargingStationService {
+  private static instance: ChargingStationService;
   private apiKey: string;
   private baseUrl: string;
   private cache: Map<string, { data: ChargingStation[], timestamp: number }> = new Map();
   private readonly CACHE_DURATION = 5 * 60 * 1000; // 5 dakika cache
   private readonly queue = new PQueue({ interval: 2000, intervalCap: 1 }); // 1 req/2sec - Çok daha güvenli
+  private cacheManager: CacheManager;
 
-  constructor() {
+  private constructor() {
     this.apiKey = OPEN_CHARGE_MAP_API_KEY;
     this.baseUrl = BASE_URL;
+    this.cacheManager = new CacheManager();
+  }
+
+  public static getInstance(): ChargingStationService {
+    if (!ChargingStationService.instance) {
+      ChargingStationService.instance = new ChargingStationService();
+    }
+    return ChargingStationService.instance;
   }
 
   /**
@@ -189,19 +199,9 @@ class ChargingStationService {
   /**
    * Cache'den veri al
    */
-  private getFromCache(key: string): ChargingStation[] | null {
-    const cached = this.cache.get(key);
-    if (cached && (Date.now() - cached.timestamp) < this.CACHE_DURATION) {
-      console.log('🎯 Cache hit:', key);
-      return cached.data;
-    }
-    
-    if (cached) {
-      // Expired cache'i temizle
-      this.cache.delete(key);
-    }
-    
-    return null;
+  private async getCachedStations(key: string): Promise<ChargingStation[] | null> {
+    const cached = await this.cacheManager.get(key);
+    return cached || null;
   }
 
   /**
@@ -299,52 +299,58 @@ class ChargingStationService {
   }
 
   /**
-   * 🧠 Adaptif yarıçapla şarj istasyonu arama (15km → 25km → 35km)
+   * 🎯 Adaptif yarıçap ile şarj istasyonu arama
    */
   private async searchWithAdaptiveRadius(
-    latitude: number, 
-    longitude: number
+    latitude: number,
+    longitude: number,
+    radius: number = 15
   ): Promise<ChargingStation[]> {
-    const radiusList = [15, 25, 35]; // km
+    const cacheKey = `${latitude.toFixed(3)},${longitude.toFixed(3)}_r${radius}`;
     
-    for (const radius of radiusList) {
-      try {
-        console.log(`🔍 Trying radius ${radius}km for point (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`);
-        
-        // 🎯 Cache kontrolü
-        const cacheKey = this.getCacheKey(latitude, longitude, radius);
-        const cachedResult = this.getFromCache(cacheKey);
-        
-        if (cachedResult) {
-          console.log(`✅ Found ${cachedResult.length} stations (cached) at ${radius}km radius`);
-          return cachedResult;
-        }
-        
-        const stations = await this.searchChargingStations({
-          latitude: latitude,
-          longitude: longitude,
-          distance: radius,
-          maxResults: 10,
-          statusTypeId: 50, // Operational only
-          compact: true
-        });
-        
-        // 💾 Cache'e kaydet
-        this.saveToCache(cacheKey, stations);
-        
-        if (stations.length > 0) {
-          console.log(`✅ Found ${stations.length} stations at ${radius}km radius`);
-          return stations;
-        }
-        
-        console.log(`❌ No stations found at ${radius}km radius`);
-      } catch (error) {
-        console.warn(`🔌 Error at ${radius}km radius:`, error);
-      }
+    // Önbellekten kontrol et
+    const cachedStations = await this.cacheManager.get(cacheKey);
+    if (cachedStations) {
+      console.log(`🎯 Cache hit: ${cacheKey}`);
+      return cachedStations;
     }
-    
-    console.log(`🚫 No stations found at any radius for point (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`);
-    return [];
+
+    try {
+      console.log(`🔍 Trying radius ${radius}km for point (${latitude}, ${longitude})`);
+      
+      const params = {
+        output: 'json',
+        key: this.apiKey,
+        latitude: latitude.toString(),
+        longitude: longitude.toString(),
+        distance: radius.toString(),
+        maxresults: '10',
+        compact: 'true',
+        includecomments: 'false',
+        statustypeid: '50'
+      };
+
+      console.log('🔌 Searching charging stations with params:', params);
+      
+      const response = await fetch(
+        `https://api.openchargemap.io/v3/poi?${new URLSearchParams(params)}`
+      );
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      const stations = await response.json();
+      console.log(`🔌 Found ${stations.length} charging stations`);
+      
+      // Sonuçları önbelleğe al (1 saat)
+      await this.cacheManager.set(cacheKey, stations, 3600);
+      
+      return stations;
+    } catch (error) {
+      console.error('❌ Error searching stations:', error);
+      return [];
+    }
   }
 
   /**
@@ -542,20 +548,26 @@ class ChargingStationService {
     try {
       console.log('🔌 Finding charging stations along route with advanced optimization...');
       
-      // 🧠 GeoHash tabanlı akıllı kümeleme (daha az küme, daha güvenli)
-      const clusteredPoints = this.clusterPointsByGeoHash(routePoints, 2); // precision=2 (~10km kümeler)
+      // 🧠 Gelişmiş GeoHash kümeleme (daha verimli)
+      const clusteredPoints = this.clusterPointsByGeoHash(routePoints, 3); // precision=3 (~1km kümeler)
       const searchPoints = clusteredPoints.map(cluster => cluster.representative);
       
-      // Maksimum 5 küme ile sınırla
-      let limitedSearchPoints = searchPoints.slice(0, 5);
+      // Akıllı küme sayısı hesaplama
+      const routeLength = routePoints.length;
+      const optimalClusterCount = Math.min(
+        Math.max(3, Math.ceil(routeLength / 100)), // Her 100 nokta için 1 küme
+        5 // Maksimum 5 küme
+      );
       
-      // 🚨 Emergency fallback: Eğer çok fazla küme varsa basit 3 nokta sistemine geç
+      let limitedSearchPoints = searchPoints.slice(0, optimalClusterCount);
+      
+      // 🚨 Emergency fallback: Eğer çok fazla küme varsa akıllı 3 nokta sistemine geç
       if (limitedSearchPoints.length > 3) {
-        console.log('⚠️ Too many clusters, falling back to simple 3-point search');
+        console.log('⚠️ Too many clusters, using smart 3-point search');
         const routeLength = routePoints.length;
         limitedSearchPoints = [
           routePoints[0], // Başlangıç
-          routePoints[Math.floor(routeLength / 2)], // Orta
+          routePoints[Math.floor(routeLength * 0.4)], // %40 noktası
           routePoints[routeLength - 1] // Bitiş
         ];
       }
@@ -568,8 +580,16 @@ class ChargingStationService {
       console.log(`🎯 Searching at ${limitedSearchPoints.length} clustered points along route (limited for safety)`);
 
       let allStations: ChargingStation[] = [];
+      const cacheKey = `route_${routePoints[0].latitude}_${routePoints[0].longitude}_${routePoints[routePoints.length-1].latitude}_${routePoints[routePoints.length-1].longitude}`;
+      
+      // Önbellekten kontrol et
+      const cachedStations = await this.cacheManager.get(cacheKey);
+      if (cachedStations) {
+        console.log('🎯 Cache hit for route');
+        return cachedStations;
+      }
 
-      // 🚀 Rate-limit-aware Queue ile paralel API çağrıları - ChatGPT önerisi
+      // 🚀 Rate-limit-aware Queue ile paralel API çağrıları
       console.log(`⚡ Making ${limitedSearchPoints.length} queue-managed API calls...`);
       
       const searchPromises = limitedSearchPoints.map((point, i) => {
@@ -577,7 +597,13 @@ class ChargingStationService {
           console.log(`🔍 Search point ${i + 1}/${limitedSearchPoints.length}: (${point.latitude.toFixed(5)}, ${point.longitude.toFixed(5)})`);
           
           try {
-            const stationsAtPoint = await this.searchWithAdaptiveRadius(point.latitude, point.longitude);
+            // Dinamik arama yarıçapı hesaplama
+            const dynamicRadius = Math.min(
+              Math.max(searchRadius, batteryRangeKm / 10), // Minimum searchRadius, maksimum batarya menzilinin 1/10'u
+              30 // Maksimum 30km
+            );
+            
+            const stationsAtPoint = await this.searchWithAdaptiveRadius(point.latitude, point.longitude, dynamicRadius);
             console.log(`✅ Point ${i + 1} completed: ${stationsAtPoint.length} stations found`);
             
             return { point, stations: stationsAtPoint, index: i };
@@ -591,59 +617,33 @@ class ChargingStationService {
       // Tüm paralel çağrıları bekle
       const results = await Promise.all(searchPromises);
       
-      // Sonuçları birleştir
+      // Sonuçları birleştir (Set kullanarak daha hızlı duplicate removal)
+      const stationSet = new Set<number>();
       for (const result of results) {
         if (result && result.stations.length > 0) {
-          const newStations = result.stations.filter((station: ChargingStation) => 
-            !allStations.some(existing => existing.ID === station.ID)
-          );
-          
-          if (newStations.length > 0) {
-            allStations.push(...newStations);
-            console.log(`➕ Added ${newStations.length} new stations from point ${result.index + 1} (${allStations.length} total)`);
+          for (const station of result.stations) {
+            if (!stationSet.has(station.ID)) {
+              stationSet.add(station.ID);
+              allStations.push(station);
+            }
           }
+          console.log(`➕ Added stations from point ${result.index + 1} (${allStations.length} total)`);
         }
       }
 
       console.log(`📊 Raw stations found: ${allStations.length}`);
 
-      // Gelişmiş duplicate removal
-      const uniqueStations = this.removeDuplicatesAdvanced(allStations);
-      console.log(`🧹 Removed ${allStations.length - uniqueStations.length} duplicates (${allStations.length} → ${uniqueStations.length})`);
-
       // Rota yakınında olanları filtrele
-      const nearbyStations = this.filterNearestToRoute(uniqueStations, routePoints, 10);
+      const nearbyStations = this.filterNearestToRoute(allStations, routePoints, 10);
       console.log(`📍 Stations within 10km of route: ${nearbyStations.length}`);
 
-      // Power kategorilerine ayır
-      const powerCategories = this.categorizeByPower(nearbyStations);
-      console.log(`🔋 Power categories: Fast(${powerCategories.fast.length}), Medium(${powerCategories.medium.length}), Slow(${powerCategories.slow.length})`);
+      // Sonuçları önbelleğe al (1 saat)
+      await this.cacheManager.set(cacheKey, nearbyStations, 3600);
 
-      // Optimal durakları seç
-      const optimalStops = this.selectOptimalStops(nearbyStations, routePoints, batteryRangeKm);
-      console.log(`⚡ Optimal charging stops selected: ${optimalStops.length}`);
-
-      // Final optimized stations
-      const finalStations = nearbyStations.length > 15 ? 
-        [...optimalStops, ...nearbyStations.filter(s => !optimalStops.includes(s)).slice(0, 15 - optimalStops.length)] : 
-        nearbyStations;
-
-      console.log(`🔌 Final optimized stations: ${finalStations.length}`);
-
-      // Top 3 fast chargers for logging
-      const topFastChargers = powerCategories.fast
-        .sort((a, b) => this.getMaxPowerKW(b) - this.getMaxPowerKW(a))
-        .slice(0, 3)
-        .map(station => `${station.AddressInfo?.Title || 'Unknown'} (${this.getMaxPowerKW(station)}kW)`)
-        .join(', ');
-      
-      console.log(`🏆 Top 3 fast chargers: ${topFastChargers}`);
-
-      return finalStations;
-
+      return nearbyStations;
     } catch (error) {
-      console.error('❌ Error finding charging stations along route:', error);
-      return [];
+      console.error('❌ Error finding charging stations:', error);
+      throw error;
     }
   }
 
@@ -836,6 +836,34 @@ class ChargingStationService {
   }
 }
 
+// Cache Manager sınıfı
+class CacheManager {
+  private cache: Map<string, { data: any; expiry: number }>;
+  
+  constructor() {
+    this.cache = new Map();
+  }
+  
+  async get(key: string): Promise<any> {
+    const item = this.cache.get(key);
+    if (!item) return null;
+    
+    if (Date.now() > item.expiry) {
+      this.cache.delete(key);
+      return null;
+    }
+    
+    return item.data;
+  }
+  
+  async set(key: string, data: any, ttlSeconds: number): Promise<void> {
+    this.cache.set(key, {
+      data,
+      expiry: Date.now() + (ttlSeconds * 1000)
+    });
+  }
+}
+
 /**
  * 🧭 Rota boyunca eşit aralıklarla şarj istasyonu arama noktaları oluşturur
  * 
@@ -886,5 +914,5 @@ export function getChargingSearchPoints(
   return searchPoints;
 }
 
-export const chargingStationService = new ChargingStationService();
+export const chargingStationService = ChargingStationService.getInstance();
 export default chargingStationService; 
