@@ -2,8 +2,8 @@
 // NOT: Production'da bu değerler çevresel değişkenlerden alınmalı
 
 export const ENV = {
-  // Google Maps API Key
-  GOOGLE_MAPS_API_KEY: 'AIzaSyC1RCUy97Gu_yFZuCSi9lFP2Utv3pm75Mc',
+  // Google Maps API Key (Directions, Elevation, vb.)
+  GOOGLE_MAPS_API_KEY: 'AIzaSyDYBOV-Bj3nbYBpNHBa6EAjE4gBdFP-f6E',
   
   // API Endpoints
   NOMINATIM_BASE_URL: 'https://nominatim.openstreetmap.org',

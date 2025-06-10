@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { View, ScrollView, ActivityIndicator, Alert, TouchableOpacity, FlatList, Dimensions, Platform } from 'react-native';
+import { View, ScrollView, ActivityIndicator, Alert, TouchableOpacity, FlatList, Dimensions, Platform, StyleSheet } from 'react-native';
 import { Text, Card, Button, Chip, Divider, Title, Paragraph } from 'react-native-paper';
 import MapView, { Polyline, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import { ENV } from '../config/env';
 
 import { useLocationStore } from '../context/useLocationStore';
-import { useVehicleStore } from '../context/useVehicleStore';
+import { useVehicleStore, useSelectedVehicle } from '../context/useVehicleStore';
 import { useNavigation } from '@react-navigation/native';
 import chargingStationService, { ChargingStation } from '../services/chargingStationService';
 import routeService from '../services/routeService';
@@ -21,8 +22,11 @@ import {
   RoutePlanResult 
 } from '../lib/energyUtils';
 
+import { getElevationForPolyline, buildSegmentData, calculateSegmentEnergy, downsamplePolyline } from '../utils/elevationEnergy';
+import { runAllTests } from '../utils/testUtils';
+
 // Google Maps API Key - Production'da environment variable'dan alınmalı
-const GOOGLE_MAPS_API_KEY = 'AIzaSyC1RCUy97Gu_yFZuCSi9lFP2Utv3pm75Mc';
+const GOOGLE_MAPS_API_KEY = ENV.GOOGLE_MAPS_API_KEY;
 
 // Haversine formula ile mesafe hesapla (km)
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -96,6 +100,7 @@ export default function RouteDetailScreen() {
 
   // 🚗 Vehicle Store
   const { getSelectedVehicle, initializeMockData } = useVehicleStore();
+  const selectedVehicle = useSelectedVehicle();
   
   const [loading, setLoading] = useState(true);
   const [loadingChargingStations, setLoadingChargingStations] = useState(false);
@@ -112,6 +117,12 @@ export default function RouteDetailScreen() {
   // Rota renkleri
   // Route colors - White primary, blue secondary like in screenshot
   const routeColors = ['#FFFFFF', '#2196F3', '#4CAF50', '#FF9800', '#9C27B0'];
+
+  const [elevationEnergy, setElevationEnergy] = useState<{
+    totalEnergy: number;
+    segmentEnergies: number[];
+    segments: any[];
+  } | null>(null);
 
   /**
    * 🧠 Test: Yeni Rota Planlama Fonksiyonu
@@ -324,6 +335,26 @@ export default function RouteDetailScreen() {
         availableStations: stations.length
       });
 
+      // --- YÜKSEKLİK ENTEGRASYONU BAŞLANGIÇ ---
+      // Polyline noktalarını {lat, lng} formatına dönüştür
+      const originalPolylinePoints = selectedRoute.polylinePoints.map(p => ({ lat: p.latitude, lng: p.longitude }));
+      // 500 m aralıklarla downsample et
+      const polylinePoints = downsamplePolyline(originalPolylinePoints, 500);
+      let elevationTotalEnergy = null;
+      let segmentEnergies: number[] | undefined = undefined;
+      try {
+        const elevations = await getElevationForPolyline(polylinePoints, ENV.GOOGLE_MAPS_API_KEY);
+        const segments = buildSegmentData(polylinePoints, elevations);
+        const baseConsumption = selectedVehicle.consumption;
+        const regenEfficiency = 0.6; // Varsayılan rejeneratif frenleme verimliliği
+        segmentEnergies = segments.map(seg => calculateSegmentEnergy(seg, baseConsumption, regenEfficiency));
+        elevationTotalEnergy = segmentEnergies.reduce((sum, e) => sum + e, 0);
+        console.log('⚡ Yükseklik+Rejen etkili toplam enerji:', elevationTotalEnergy.toFixed(2), 'kWh');
+      } catch (err) {
+        console.warn('⚠️ Elevation verisi alınamadı veya hata oluştu:', err);
+      }
+      // --- YÜKSEKLİK ENTEGRASYONU BİTİŞ ---
+
       // Route data'yı hazırla
       const routeData = {
         distance: selectedRoute.distance,
@@ -354,8 +385,14 @@ export default function RouteDetailScreen() {
       const plan = generateChargingPlan({
         selectedVehicle,
         routeData,
-        chargingStations: stations
+        chargingStations: stations,
+        segmentEnergies
       });
+
+      // Yükseklik etkili enerji tüketimini warnings'e ekle (demo amaçlı)
+      if (elevationTotalEnergy !== null) {
+        plan.warnings.push(`Yükseklik etkili toplam enerji: ${elevationTotalEnergy.toFixed(2)} kWh`);
+      }
 
       setChargingPlan(plan);
       console.log('✅ Charging plan generated:', {
@@ -669,6 +706,14 @@ export default function RouteDetailScreen() {
   const selectedRoute = routes[selectedRouteIndex];
   const selectedEVInfo = routeEVInfo[selectedRouteIndex];
 
+  const handleRunTests = async () => {
+    try {
+      await runAllTests();
+    } catch (error) {
+      console.error('Test çalıştırma hatası:', error);
+    }
+  };
+
   // Loading state
   if (loading || loadingRoutes) {
     return (
@@ -717,6 +762,33 @@ export default function RouteDetailScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#f5f7fa' }}>
+      {/* Test Butonu */}
+      <TouchableOpacity
+        style={{
+          position: 'absolute',
+          top: 50,
+          right: 20,
+          backgroundColor: '#4CAF50',
+          padding: 10,
+          borderRadius: 8,
+          zIndex: 1000,
+        }}
+        onPress={async () => {
+          try {
+            const result = await routeService.testAntalyaKorkuteliRoute();
+            Alert.alert(
+              'Test Sonuçları',
+              `Antalya → Korkuteli: ${result.antalyaToKorkuteli.routes.length} rota\n` +
+              `Korkuteli → Antalya: ${result.korkuteliToAntalya.routes.length} rota`
+            );
+          } catch (error: any) {
+            Alert.alert('Hata', 'Test sırasında bir hata oluştu: ' + (error.message || 'Bilinmeyen hata'));
+          }
+        }}
+      >
+        <Text style={{ color: 'white', fontWeight: 'bold' }}>Test Rotası</Text>
+      </TouchableOpacity>
+
       {/* Harita Alanı */}
       <View style={{ flex: showSummary ? 0.55 : 1 }}>
         <MapView
@@ -1248,69 +1320,29 @@ export default function RouteDetailScreen() {
 
             {/* 🔋 EV Şarj Planı Section */}
             {chargingPlan && (
-              <View>
-                {/* 📊 Trip Summary (ABRP tarzı) */}
-                <TripSummary 
+              <View style={{ marginTop: 10 }}>
+                <TripSummary
                   chargingPlan={chargingPlan}
-                  routeDistanceKm={localSelectedRouteIndex !== null ? routes[localSelectedRouteIndex].distance / 1000 : 0}
-                  drivingTimeMinutes={localSelectedRouteIndex !== null ? Math.round(routes[localSelectedRouteIndex].duration / 60) : 0}
+                  routeDistanceKm={selectedRoute?.distance ? selectedRoute.distance / 1000 : 0}
+                  drivingTimeMinutes={selectedRoute?.duration ? Math.round(selectedRoute.duration / 60) : 0}
                 />
-
-                {/* 🔌 Charging Stops Details */}
-                {chargingPlan.chargingStops.length > 0 && (
-                  <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
-                    <View style={{ 
-                      flexDirection: 'row', 
-                      justifyContent: 'space-between', 
-                      alignItems: 'center',
-                      marginBottom: 12
-                    }}>
-                      <Text style={{ 
-                        fontSize: 18, 
-                        fontWeight: 'bold', 
-                        color: '#2C3E50'
-                      }}>
-                        🔌 Şarj Durakları
-                      </Text>
-                      <TouchableOpacity 
-                        onPress={() => setShowChargingPlan(!showChargingPlan)}
-                        style={{ 
-                          flexDirection: 'row', 
-                          alignItems: 'center',
-                          paddingHorizontal: 12,
-                          paddingVertical: 6,
-                          backgroundColor: '#F8F9FA',
-                          borderRadius: 8
-                        }}
-                      >
-                        <Text style={{ 
-                          fontSize: 12, 
-                          color: '#6C757D',
-                          marginRight: 4
-                        }}>
-                          {showChargingPlan ? 'Gizle' : 'Göster'}
-                        </Text>
-                        <Text style={{ fontSize: 12, color: '#6C757D' }}>
-                          {showChargingPlan ? '▲' : '▼'}
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-
-                    {/* Charging Stop Cards */}
-                    {showChargingPlan && (
-                      <View>
-                        {chargingPlan.chargingStops.map((stop, index) => (
-                          <ChargingStopCard
-                            key={`charging-stop-${stop.stationId}-${index}`}
-                            stop={stop}
-                            stopNumber={index + 1}
-                            isLast={index === chargingPlan.chargingStops.length - 1}
-                          />
-                        ))}
+                <View style={{ backgroundColor: '#fff', borderRadius: 12, margin: 10, padding: 10, elevation: 2 }}>
+                  <Text style={{ fontSize: 17, fontWeight: 'bold', marginBottom: 8, color: '#1976D2' }}>🔌 Şarj Durakları Planı</Text>
+                  {chargingPlan.chargingStops.length === 0 ? (
+                    <Text style={{ color: '#888', fontStyle: 'italic' }}>Bu yolculukta şarj durağı gerekmiyor.</Text>
+                  ) : (
+                    chargingPlan.chargingStops.map((stop, i) => (
+                      <View key={i} style={{ borderBottomWidth: i < chargingPlan.chargingStops.length - 1 ? 1 : 0, borderColor: '#eee', paddingVertical: 10 }}>
+                        <Text style={{ fontWeight: 'bold', fontSize: 15 }}>{i + 1}. {stop.name}</Text>
+                        <Text style={{ color: '#555', fontSize: 13 }}>📍 {stop.distanceFromStartKm} km | Segment {stop.segmentInfo?.segmentIndex || i + 1}</Text>
+                        <Text style={{ color: '#1976D2', fontSize: 13 }}>🔋 {stop.batteryBeforeStopPercent}% → {stop.batteryAfterStopPercent}%</Text>
+                        <Text style={{ color: '#388E3C', fontSize: 13 }}>⚡ +{stop.energyChargedKWh} kWh</Text>
+                        <Text style={{ color: '#555', fontSize: 13 }}>⏱️ {stop.estimatedChargeTimeMinutes} dk | ⚡ {stop.stationPowerKW} kW ({stop.connectorType})</Text>
+                        <Text style={{ color: '#888', fontSize: 12 }}>Ortalama Güç: {stop.averageChargingPowerKW} kW | Verimlilik: {stop.chargingEfficiency}%</Text>
                       </View>
-                    )}
-                  </View>
-                )}
+                    ))
+                  )}
+                </View>
               </View>
             )}
 
@@ -1526,6 +1558,84 @@ export default function RouteDetailScreen() {
           </ScrollView>
         </View>
       )}
+
+      {/* Yükseklikli Enerji Butonu */}
+      <TouchableOpacity
+        style={{
+          position: 'absolute',
+          top: 100,
+          right: 20,
+          backgroundColor: '#1976D2',
+          padding: 10,
+          borderRadius: 8,
+          zIndex: 1000,
+        }}
+        onPress={async () => {
+          if (!selectedRoute) return;
+          // Polyline noktalarını {lat, lng} formatına dönüştür
+          const polylinePoints = selectedRoute.polylinePoints.map(p => ({ lat: p.latitude, lng: p.longitude }));
+          try {
+            const elevations = await getElevationForPolyline(polylinePoints, ENV.GOOGLE_MAPS_API_KEY);
+            const segments = buildSegmentData(polylinePoints, elevations);
+            const baseConsumption = selectedVehicle?.consumption || 17.8;
+            const segmentEnergies = segments.map(seg => calculateSegmentEnergy(seg, baseConsumption));
+            const totalEnergy = segmentEnergies.reduce((sum, e) => sum + e, 0);
+            setElevationEnergy({ totalEnergy, segmentEnergies, segments });
+            Alert.alert('Yükseklikli Enerji', `Toplam: ${totalEnergy.toFixed(2)} kWh`);
+          } catch (err: any) {
+            Alert.alert('Hata', err.message || 'Bilinmeyen hata');
+          }
+        }}
+      >
+        <Text style={{ color: 'white', fontWeight: 'bold' }}>Yokuşlu Enerji</Text>
+      </TouchableOpacity>
+
+      {/* Yükseklikli Enerji Sonucu */}
+      {elevationEnergy && (
+        <View style={{ padding: 16, backgroundColor: '#fff', margin: 10, borderRadius: 8 }}>
+          <Text>Toplam Enerji: {elevationEnergy.totalEnergy.toFixed(2)} kWh</Text>
+          {elevationEnergy.segments.map((seg, i) => (
+            <Text key={i}>
+              Segment {i + 1}: {seg.distance_km.toFixed(2)} km, Δh: {seg.elevation_diff_m.toFixed(1)} m, Enerji: {elevationEnergy.segmentEnergies[i].toFixed(3)} kWh
+            </Text>
+          ))}
+        </View>
+      )}
+
+      <View style={styles.buttonContainer}>
+        <TouchableOpacity
+          style={[styles.button, styles.testButton]}
+          onPress={handleRunTests}
+        >
+          <Text style={styles.buttonText}>🧪 Testleri Çalıştır</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
-} 
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f5f7fa',
+  },
+  buttonContainer: {
+    position: 'absolute',
+    top: 100,
+    right: 20,
+    zIndex: 1000,
+  },
+  button: {
+    backgroundColor: '#4CAF50',
+    padding: 10,
+    borderRadius: 8,
+  },
+  testButton: {
+    backgroundColor: '#6c5ce7',
+    marginTop: 10,
+  },
+  buttonText: {
+    color: 'white',
+    fontWeight: 'bold',
+  },
+}); 

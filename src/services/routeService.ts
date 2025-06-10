@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { RouteInfo, RouteEVInfo } from '../context/useLocationStore';
+import { ENV } from '../config/env';
 
 // Google Maps API Key - Production'da environment variable'dan alınmalı
 const GOOGLE_MAPS_API_KEY = 'AIzaSyC1RCUy97Gu_yFZuCSi9lFP2Utv3pm75Mc';
@@ -108,7 +109,7 @@ class RouteService {
       const params = {
         origin: `${fromCoord[0]},${fromCoord[1]}`,
         destination: `${toCoord[0]},${toCoord[1]}`,
-        key: GOOGLE_MAPS_API_KEY,
+        key: ENV.GOOGLE_MAPS_API_KEY,
         mode: 'driving',
         language: 'tr',
         alternatives: 'true', // Bu çoklu rota için en önemli parametre
@@ -284,6 +285,50 @@ class RouteService {
    */
   getEVConfig() {
     return { ...EV_CONFIG };
+  }
+
+  /**
+   * 🧪 Test rotası: Antalya ↔ Korkuteli
+   */
+  async testAntalyaKorkuteliRoute() {
+    console.log('🧪 Testing Antalya ↔ Korkuteli routes...');
+    
+    // Antalya Merkez → Korkuteli
+    const antalyaToKorkuteli = await this.fetchMultipleRoutes(
+      [36.8969, 30.7133], // Antalya Merkez
+      [37.0647, 30.1956]  // Korkuteli
+    );
+    
+    console.log('\n📌 Antalya → Korkuteli Rota Sonuçları:');
+    console.log('=====================================');
+    console.log(`🛣️ Bulunan Rota Sayısı: ${antalyaToKorkuteli.routes.length}`);
+    antalyaToKorkuteli.routes.forEach((route, index) => {
+      console.log(`\nRota ${index + 1}:`);
+      console.log(`📏 Mesafe: ${(route.distance / 1000).toFixed(1)} km`);
+      console.log(`⏱️ Süre: ${Math.round(route.duration / 60)} dakika`);
+      console.log(`📝 Özet: ${route.summary}`);
+    });
+    
+    // Korkuteli → Antalya Merkez
+    const korkuteliToAntalya = await this.fetchMultipleRoutes(
+      [37.0647, 30.1956], // Korkuteli
+      [36.8969, 30.7133]  // Antalya Merkez
+    );
+    
+    console.log('\n📌 Korkuteli → Antalya Rota Sonuçları:');
+    console.log('=====================================');
+    console.log(`🛣️ Bulunan Rota Sayısı: ${korkuteliToAntalya.routes.length}`);
+    korkuteliToAntalya.routes.forEach((route, index) => {
+      console.log(`\nRota ${index + 1}:`);
+      console.log(`📏 Mesafe: ${(route.distance / 1000).toFixed(1)} km`);
+      console.log(`⏱️ Süre: ${Math.round(route.duration / 60)} dakika`);
+      console.log(`📝 Özet: ${route.summary}`);
+    });
+    
+    return {
+      antalyaToKorkuteli,
+      korkuteliToAntalya
+    };
   }
 }
 
