@@ -1,6 +1,7 @@
 import { Vehicle } from '../context/useVehicleStore';
 import { ChargingStation } from '../services/chargingStationService';
-import { EnergyCalculator, generateBatteryWarnings, calculateTripStats, formatDuration, SegmentSOC } from '../lib/energyUtils';
+import { EnergyCalculator, generateBatteryWarnings, calculateTripStats, formatDuration } from '../lib/energyUtils';
+import { calculateSegmentEnergy } from './energyCalculator';
 
 // Haversine formula - iki koordinat arası mesafe hesaplama (km)
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -128,6 +129,14 @@ export interface RouteData {
   polylinePoints: Array<{ latitude: number; longitude: number }>;
 }
 
+export interface SegmentSOC {
+  segmentIndex: number;
+  distanceKm: number;
+  energy: number;
+  socDrop: number;
+  socAfter: number;
+}
+
 export interface ChargingPlanResult {
   chargingStops: ChargingStop[];
   totalChargingTimeMinutes: number;
@@ -154,12 +163,14 @@ export function generateChargingPlan({
   selectedVehicle,
   routeData,
   chargingStations,
-  segmentEnergies
+  segmentEnergies,
+  startChargePercent = 85
 }: {
   selectedVehicle: Vehicle;
   routeData: RouteData;
   chargingStations: ChargingStation[];
   segmentEnergies?: number[];
+  startChargePercent?: number;
 }): ChargingPlanResult {
   console.log('🧮 Şarj planı hesaplama başladı...', {
     vehicle: `${selectedVehicle.brand} ${selectedVehicle.model}`,
@@ -169,39 +180,30 @@ export function generateChargingPlan({
     availableStations: chargingStations.length
   });
   
-  const energyCalc = new EnergyCalculator(
-    selectedVehicle.batteryCapacity,
-    selectedVehicle.consumption
-  );
+  // Sabitler ve başlangıç değerleri
+  const SAFETY_SOC = 20; // Minimum güvenli SOC
+  const PREFERRED_SOC = 80; // Tercih edilen maksimum SOC
+  const SOC_BUFFER = 1; // SOC farkı toleransı
   
   const warnings: string[] = [];
   const chargingStops: ChargingStop[] = [];
+  const segmentDetails: SegmentSOC[] = [];
   
   // [1] 📊 Temel hesaplamalar
   const routeDistanceKm = routeData.distance / 1000;
-  const MAX_SOC = 80;
-  const MIN_SOC = 20;
-  const startChargePercent = 85;
-  const targetArrivalPercent = 15;
   let currentBatteryPercent = startChargePercent;
   let currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
   let traveledDistanceKm = 0;
   let usedStationIds = new Set<number>();
-  let segmentIndex = 0;
   let totalEnergyNeededKWh = 0;
   
-  // Eğer segmentEnergies varsa, segment bazlı enerjiyle ilerle
+  // [2] 🔋 Segment bazlı enerji hesaplama
   let segments: number[] = [];
   if (segmentEnergies && segmentEnergies.length > 0) {
     segments = segmentEnergies;
-  } else if (routeData.polylinePoints && routeData.polylinePoints.length > 1 && selectedVehicle) {
-    // Polyline ve yükseklikten segment bazlı enerji hesapla
-    // Yükseklik verisi yoksa tüm segmentler düz kabul edilir
-    // (Gerçek uygulamada yükseklik verisi async alınmalı, burada örnek için 0 kabul ediliyor)
+  } else if (routeData.polylinePoints && routeData.polylinePoints.length > 1) {
     const points = routeData.polylinePoints;
-    // Dummy elevation: tüm noktalar 0 kabul
-    const elevations = Array(points.length).fill(0);
-    // Segmentleri oluştur
+    const elevations = Array(points.length).fill(0); // Gerçek uygulamada API'den alınacak
     for (let i = 0; i < points.length - 1; i++) {
       const distance = calculateDistance(
         points[i].latitude,
@@ -210,46 +212,64 @@ export function generateChargingPlan({
         points[i + 1].longitude
       );
       const elevation = elevations[i + 1] - elevations[i];
-      // Enerji hesapla (fiziksel model)
       const params = { speed: 100, temperature: 20, load: 0, isHighway: true };
-      const energy = require('./energyCalculator').calculateSegmentEnergy(distance, elevation, selectedVehicle, params);
+      const energy = calculateSegmentEnergy(distance, elevation, selectedVehicle, params);
       segments.push(energy);
     }
   } else {
-    // Sadece toplam mesafe ile klasik enerji hesabı
-    segments = [energyCalc.distanceToEnergyConsumption(routeDistanceKm)];
+    segments = [selectedVehicle.consumption * (routeDistanceKm / 100)];
   }
   
+  // [3] 🚗 Segment bazlı ilerleme ve şarj planı
   for (let i = 0; i < segments.length; i++) {
     const segmentEnergy = segments[i];
-    const segmentDistance = routeData.polylinePoints && routeData.polylinePoints.length > 1
-      ? calculateDistance(
-          routeData.polylinePoints[i]?.latitude || 0,
-          routeData.polylinePoints[i]?.longitude || 0,
-          routeData.polylinePoints[i + 1]?.latitude || 0,
-          routeData.polylinePoints[i + 1]?.longitude || 0
-        )
-      : routeDistanceKm;
-    totalEnergyNeededKWh += segmentEnergy;
-    const socDrop = (segmentEnergy / selectedVehicle.batteryCapacity) * 100;
-    const socAfterSegment = currentBatteryPercent - socDrop;
-
-    // Şarj ihtiyacı kontrolü
-    if (socAfterSegment < MIN_SOC) {
-      warnings.push(`⚠️ Segment ${i + 1} sonunda SOC %${socAfterSegment.toFixed(1)} (<%${MIN_SOC}) olacak. Ek şarj planlanıyor.`);
-      // Uygun istasyon bul
-      const currentPosition = routeData.polylinePoints[i] || routeData.polylinePoints[0];
-      const notUsedStations = chargingStations.filter(station => !usedStationIds.has(station.ID));
-      const compatibleStations = notUsedStations.filter(station => isStationCompatible(station, selectedVehicle.socketType));
-      const availableStations = compatibleStations
+    const segmentDistance = routeData.polylinePoints ? 
+      calculateDistance(
+        routeData.polylinePoints[i].latitude,
+        routeData.polylinePoints[i].longitude,
+        routeData.polylinePoints[i + 1].latitude,
+        routeData.polylinePoints[i + 1].longitude
+      ) : routeDistanceKm / segments.length;
+    
+    // Segment sonu SOC tahmini
+    const energyForSegment = segmentEnergy;
+    const socDropForSegment = (energyForSegment / selectedVehicle.batteryCapacity) * 100;
+    const socAfterSegment = currentBatteryPercent - socDropForSegment;
+    
+    // Segment detaylarını kaydet
+    segmentDetails.push({
+      segmentIndex: i + 1,
+      distanceKm: segmentDistance,
+      energy: energyForSegment,
+      socDrop: socDropForSegment,
+      socAfter: socAfterSegment
+    });
+    
+    // Güvenlik kontrolü
+    if (socAfterSegment < SAFETY_SOC) {
+      warnings.push(`⚠️ Segment ${i + 1} sonunda SOC %${socAfterSegment.toFixed(1)} (<%${SAFETY_SOC}) olacak. Ek şarj planlanıyor.`);
+      
+      // En uygun şarj istasyonunu bul
+      const currentPosition = routeData.polylinePoints ? 
+        routeData.polylinePoints[i] : 
+        { latitude: 0, longitude: 0 };
+      
+      const availableStations = chargingStations
+        .filter(station => {
+          if (!station.AddressInfo?.Latitude || !station.AddressInfo?.Longitude) return false;
+          if (usedStationIds.has(station.ID)) return false;
+          
+          const distance = calculateDistance(
+            station.AddressInfo.Latitude,
+            station.AddressInfo.Longitude,
+            currentPosition.latitude,
+            currentPosition.longitude
+          );
+          
+          return distance <= 50; // 50km yarıçap
+        })
         .map(station => ({
           station,
-          score: calculateStationScore(
-            station,
-            currentPosition.latitude,
-            currentPosition.longitude,
-            selectedVehicle.socketType
-          ),
           distance: calculateDistance(
             station.AddressInfo?.Latitude || 0,
             station.AddressInfo?.Longitude || 0,
@@ -257,100 +277,158 @@ export function generateChargingPlan({
             currentPosition.longitude
           )
         }))
-        .sort((a, b) => b.score - a.score);
+        .sort((a, b) => a.distance - b.distance);
+      
       if (availableStations.length === 0) {
-        warnings.push('Uygun şarj istasyonu bulunamadı! Alternatif rota önerilir.');
+        const allStations = chargingStations.map(station => ({
+          station,
+          distance: calculateDistance(
+            station.AddressInfo?.Latitude || 0,
+            station.AddressInfo?.Longitude || 0,
+            currentPosition.latitude,
+            currentPosition.longitude
+          )
+        }));
+        if (allStations.length > 0) {
+          const nearest = allStations.sort((a, b) => a.distance - b.distance)[0];
+          warnings.push(`⚠️ Uygun şarj istasyonu bulunamadı! En yakın istasyon: ${nearest.station.AddressInfo?.Title || 'Bilinmiyor'}, ${nearest.distance.toFixed(1)} km uzakta`);
+        } else {
+          warnings.push('Uygun şarj istasyonu bulunamadı! Alternatif rota önerilir.');
+        }
+        // 🚨 Kritik: Şarj istasyonu yok ve SOC çok düşükse, planı başarısız döndür
+        if (socAfterSegment < SAFETY_SOC) {
+          warnings.push(`⚠️ Segment ${i + 1} sonunda batarya seviyesi çok düşük (%${socAfterSegment.toFixed(1)}). Bu rota mevcut SOC ile tamamlanamaz.`);
+          return {
+            chargingStops: [],
+            totalChargingTimeMinutes: 0,
+            canReachDestination: false,
+            batteryAtDestinationPercent: socAfterSegment,
+            totalEnergyConsumedKWh: totalEnergyNeededKWh,
+            warnings,
+            segmentDetails,
+            chargingEfficiencyStats: {
+              averageChargingPower: 0,
+              totalEnergyCharged: 0,
+              chargingEfficiency: 0
+            }
+          };
+        }
         break;
       }
+      
       const bestStation = availableStations[0].station;
-      // Hedef şarj seviyesi %80'e kadar şarj et
-      let targetChargePercent = Math.max(currentBatteryPercent, 80); // %80'e kadar şarj et
-      // Şarj miktarı ve süresi hesapla
+      
+      // Şarj kararı için güvenlik kontrolü
+      const projectedSOC = socAfterSegment; // Bu durakta şarj başlangıç SOC'si
+      let targetChargePercent = PREFERRED_SOC;
+      
+      // Eğer segment sonunda SOC düşük olacaksa, hedef SOC'yi yükselt
+      if (projectedSOC < SAFETY_SOC) {
+        targetChargePercent = PREFERRED_SOC;
+        console.log(`⚠️ Segment ${i + 1} sonunda SOC %${projectedSOC.toFixed(1)} (<%${SAFETY_SOC}) olacak. Hedef SOC %${targetChargePercent} olarak ayarlandı.`);
+      }
+      
+      // Şarj gerekliliği kontrolü
+      const needsCharging = shouldCharge(
+        projectedSOC,
+        targetChargePercent,
+        socAfterSegment,
+        SAFETY_SOC,
+        SOC_BUFFER
+      );
+      
+      // Gerçek şarj enerjisi ve süresi hesapla
       const stationPowerKW = Math.max(...(bestStation.Connections?.map(conn => conn.PowerKW || 0) || [0]));
-      const energyToChargeKWh = ((targetChargePercent - currentBatteryPercent) / 100) * selectedVehicle.batteryCapacity;
-      // Ortalama güç: istasyon gücünün %85'i
-      const avgPower = stationPowerKW * 0.85;
-      // Şarj süresi (daha gerçekçi): enerji / ortalama güç
-      const chargeTimeHours = energyToChargeKWh / avgPower;
-      const safeChargeTime = Math.round(chargeTimeHours * 60);
-      // Verimlilik: %92
-      const safeEfficiency = 92;
-
-      // Şarj durağını ekle
-      const chargingStop: ChargingStop = {
-        stationId: bestStation.ID,
-        name: bestStation.AddressInfo?.Title || `İstasyon ${bestStation.ID}`,
-        stopCoord: {
-          latitude: bestStation.AddressInfo?.Latitude || 0,
-          longitude: bestStation.AddressInfo?.Longitude || 0
-        },
-        distanceFromStartKm: Math.max(0, Math.round(traveledDistanceKm)),
-        batteryBeforeStopPercent: Math.round(currentBatteryPercent),
-        batteryAfterStopPercent: Math.round(targetChargePercent),
-        energyChargedKWh: Math.round(energyToChargeKWh * 10) / 10,
-        estimatedChargeTimeMinutes: safeChargeTime,
-        stationPowerKW: Math.round(stationPowerKW),
-        connectorType: selectedVehicle.socketType,
-        averageChargingPowerKW: Math.round(avgPower * 10) / 10,
-        chargingEfficiency: safeEfficiency,
-        segmentInfo: {
-          segmentIndex: i + 1,
-          distanceToNext: Math.max(0, routeDistanceKm - traveledDistanceKm),
-          batteryAtSegmentEnd: Math.round(targetChargePercent)
-        }
-      };
-      chargingStops.push(chargingStop);
-      usedStationIds.add(bestStation.ID);
-      // Şarj sonrası güncelle
-      currentBatteryPercent = targetChargePercent;
-      currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
-      // Bu segmenti tekrar değerlendir
+      
+      if (needsCharging) {
+        // Şarj işlemini projectedSOC'den başlat
+        const { energy, duration } = calculateCharging(
+          projectedSOC,
+          targetChargePercent,
+          selectedVehicle.batteryCapacity,
+          stationPowerKW
+        );
+        
+        // Şarj durağını ekle
+        const chargingStop: ChargingStop = {
+          stationId: bestStation.ID,
+          name: bestStation.AddressInfo?.Title || `İstasyon ${bestStation.ID}`,
+          stopCoord: {
+            latitude: bestStation.AddressInfo?.Latitude || 0,
+            longitude: bestStation.AddressInfo?.Longitude || 0
+          },
+          distanceFromStartKm: Math.max(0, Math.round(traveledDistanceKm)),
+          batteryBeforeStopPercent: Math.round(projectedSOC),
+          batteryAfterStopPercent: Math.round(targetChargePercent),
+          energyChargedKWh: energy,
+          estimatedChargeTimeMinutes: duration,
+          stationPowerKW: Math.round(stationPowerKW),
+          connectorType: selectedVehicle.socketType,
+          averageChargingPowerKW: Math.round(stationPowerKW * 0.92 * 10) / 10,
+          chargingEfficiency: 92,
+          segmentInfo: {
+            segmentIndex: i + 1,
+            distanceToNext: Math.max(0, routeDistanceKm - traveledDistanceKm),
+            batteryAtSegmentEnd: Math.round(targetChargePercent)
+          }
+        };
+        chargingStops.push(chargingStop);
+        usedStationIds.add(bestStation.ID);
+        
+        // Şarj sonrası güncelle
+        logChargingStop({
+          stopIndex: chargingStops.length,
+          stationName: chargingStop.name,
+          distance: chargingStop.distanceFromStartKm,
+          startSOC: chargingStop.batteryBeforeStopPercent,
+          endSOC: chargingStop.batteryAfterStopPercent,
+          energy: chargingStop.energyChargedKWh,
+          duration: chargingStop.estimatedChargeTimeMinutes,
+          power: chargingStop.stationPowerKW,
+          efficiency: 0.92
+        });
+        
+        // Şarj sonrası SOC'yi güncelle
+        currentBatteryPercent = targetChargePercent;
+        currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
+      } else {
+        warnings.push(`ℹ️ ${bestStation.AddressInfo?.Title || 'İstasyon'} durağında şarj yapılmadı (Projeksiyon: %${projectedSOC.toFixed(1)}, Hedef: %${targetChargePercent}, Segment Sonu: %${socAfterSegment.toFixed(1)}).`);
+      }
       continue;
     }
-
-    // Maksimum şarj sınırı kontrolü
-    if (currentBatteryPercent > MAX_SOC) {
-      currentBatteryPercent = MAX_SOC;
-      currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
-      warnings.push(`ℹ️ Şarj seviyesi %${MAX_SOC}'e kırpıldı (maksimum sınır).`);
-    }
-
+    
     // Segmenti işle ve ilerle
     currentBatteryPercent = socAfterSegment;
     currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
     traveledDistanceKm += segmentDistance;
-    segmentIndex++;
+    totalEnergyNeededKWh += energyForSegment;
   }
   
-  // [7] 📊 Final hesaplamalar
+  // [4] 📊 Final hesaplamalar
   const totalChargingTimeMinutes = chargingStops.reduce((total, stop) => total + stop.estimatedChargeTimeMinutes, 0);
-  const canReachDestination = currentBatteryPercent >= targetArrivalPercent;
-  let finalBatteryPercent = currentBatteryPercent;
-
-  // 📊 Şarj verimliliği istatistikleri hesapla
+  const canReachDestination = currentBatteryPercent >= SAFETY_SOC;
+  
+  // Şarj verimliliği istatistikleri
   const totalEnergyCharged = chargingStops.reduce((total, stop) => total + stop.energyChargedKWh, 0);
   const totalNominalCharging = chargingStops.reduce((total, stop) =>
     total + (stop.stationPowerKW * (stop.estimatedChargeTimeMinutes / 60)), 0);
   const averageChargingPower = chargingStops.length > 0 ?
-    chargingStops.reduce((total, stop) => total + (stop.averageChargingPowerKW || stop.stationPowerKW), 0) / chargingStops.length : 0;
+    chargingStops.reduce((total, stop) => total + stop.averageChargingPowerKW, 0) / chargingStops.length : 0;
   const overallChargingEfficiency = totalNominalCharging > 0 ? (totalEnergyCharged / totalNominalCharging) * 100 : 0;
-
-  // 📍 Segment bazlı SOC hesaplaması (opsiyonel, eski mantıkla bırakıldı)
-  const segmentDetails: SegmentSOC[] = [];
-
+  
   console.log('🏁 Şarj planı tamamlandı:', {
     canReachDestination,
     chargingStops: chargingStops.length,
-    finalBattery: `${finalBatteryPercent.toFixed(1)}%`,
+    finalBattery: `${currentBatteryPercent.toFixed(1)}%`,
     totalChargingTime: `${totalChargingTimeMinutes}dk`,
     warnings: warnings.length
   });
-
+  
   return {
     chargingStops,
     totalChargingTimeMinutes,
     canReachDestination,
-    batteryAtDestinationPercent: Math.round(finalBatteryPercent),
+    batteryAtDestinationPercent: Math.round(currentBatteryPercent),
     totalEnergyConsumedKWh: Math.round(totalEnergyNeededKWh * 10) / 10,
     warnings,
     segmentDetails,
@@ -420,7 +498,7 @@ export function generateChargingPlan({
  */
 
 /**
- * 🔧 YARDİMCI FONKSİYONLAR:
+ * 📖 Yardımcı Fonksiyonlar:
  */
 
 // Şarj planını UI-friendly formatta format et
@@ -542,4 +620,67 @@ function calculateChargeTime(
   
   const chargeTimeHours = energyToChargeKWh / averageChargingPower;
   return Math.round(chargeTimeHours * 60); // Dakikaya çevir
+}
+
+// --- Yardımcı: Gerçek şarj enerjisi ve süresi hesaplama ---
+function calculateCharging(
+  currentSOC: number,
+  targetSOC: number,
+  batteryCapacity: number,
+  stationPower: number,
+  efficiency = 0.92
+) {
+  const socDelta = targetSOC - currentSOC;
+  if (socDelta <= 0) {
+    return { energy: 0, duration: 0 };
+  }
+  const energyToCharge = batteryCapacity * (socDelta / 100); // kWh
+  const chargingTimeMinutes = (energyToCharge / (stationPower * efficiency)) * 60; // dakika
+  return {
+    energy: parseFloat(energyToCharge.toFixed(2)),
+    duration: Math.round(chargingTimeMinutes)
+  };
+}
+
+function logChargingStop({
+  stopIndex,
+  stationName,
+  distance,
+  startSOC,
+  endSOC,
+  energy,
+  duration,
+  power,
+  efficiency
+}: {
+  stopIndex: number;
+  stationName: string;
+  distance: number;
+  startSOC: number;
+  endSOC: number;
+  energy: number;
+  duration: number;
+  power: number;
+  efficiency: number;
+}) {
+  console.log(`  Durak ${stopIndex}: ${stationName}`);
+  console.log(`    Mesafe: ${distance} km`);
+  console.log(`    Batarya: %${startSOC} → %${endSOC}`);
+  console.log(`    Şarj Enerjisi: ${energy} kWh`);
+  console.log(`    Şarj Süresi: ${duration} dakika`);
+  console.log(`    İstasyon Gücü: ${power} kW`);
+  console.log(`    Verimlilik: %${efficiency * 100}`);
+}
+
+// --- Yardımcı: Şarj gerekliliği kontrolü ---
+function shouldCharge(
+  currentSOC: number,
+  targetSOC: number,
+  estimatedNextSOC: number,
+  minSafeSOC: number = 20,
+  buffer: number = 1
+): boolean {
+  const isLowAfterSegment = estimatedNextSOC < minSafeSOC;
+  const notFullEnough = targetSOC - currentSOC > buffer;
+  return isLowAfterSegment || notFullEnough;
 } 
