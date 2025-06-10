@@ -146,7 +146,9 @@ export interface ChargingPlanResult {
 /**
  * 🔋 EV Şarj Planlama Algoritması
  * 
- * Araç özelliklerine ve rota bilgilerine göre optimal şarj planı oluşturur
+ * Kısıtlar:
+ * 1. Maksimum şarj sınırı: %80'in üzerine şarj edilmez
+ * 2. Minimum güvenlik eşiği: Hiçbir segmentte %20'nin altına düşülmez
  */
 export function generateChargingPlan({
   selectedVehicle,
@@ -192,102 +194,36 @@ export function generateChargingPlan({
     targetArrival: `${targetArrivalPercent}%`
   });
   
-  // [2] 🔋 Mevcut durum değerlendirme
+  // Kısıtlar
+  const MAX_SOC = 80; // %80 üstü şarj yok
+  const MIN_SOC = 20; // %20 altı güvenlik eşiği
+  const maxAttempts = 20; // Sonsuz döngü önleme
+  
   let currentBatteryPercent = startChargePercent;
   let currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
-  let currentRangeKm = (currentBatteryKWh * 100) / selectedVehicle.consumption;
   let remainingDistanceKm = routeDistanceKm;
   let traveledDistanceKm = 0;
-  
-  // [3] 🎯 İlk kontrol - tek seferde gidebilir mi?
-  const canReachDirectly = currentRangeKm >= (routeDistanceKm + (routeDistanceKm * safetyMarginPercent / 100));
-  
-  if (canReachDirectly) {
-    const batteryAtDestination = currentBatteryPercent - (totalEnergyNeededKWh / selectedVehicle.batteryCapacity * 100);
-    console.log('✅ Tek seferde ulaşım mümkün:', {
-      currentRange: `${currentRangeKm.toFixed(1)}km`,
-      neededRange: `${routeDistanceKm.toFixed(1)}km`,
-      batteryAtDestination: `${batteryAtDestination.toFixed(1)}%`
-    });
-    
-    return {
-      chargingStops: [],
-      totalChargingTimeMinutes: 0,
-      canReachDestination: true,
-      batteryAtDestinationPercent: Math.round(batteryAtDestination),
-      totalEnergyConsumedKWh: totalEnergyNeededKWh,
-      warnings: batteryAtDestination < targetArrivalPercent ? 
-        [`Hedefteki batarya seviyesi (${batteryAtDestination.toFixed(1)}%) hedef seviyenin (${targetArrivalPercent}%) altında olacak`] : [],
-      segmentDetails: [],
-      chargingEfficiencyStats: {
-        averageChargingPower: 0,
-        totalEnergyCharged: 0,
-        chargingEfficiency: 0
-      }
-    };
-  }
-  
-  // [4] 🛣️ Şarj durakları planlama
-  console.log('🔌 Şarj durakları planlama gerekli...');
-  
-  const usedStationIds = new Set<number>();
   let segmentIndex = 0;
-  const maxAttempts = 10; // Sonsuz döngü önleme
+  let usedStationIds = new Set<number>();
   
   while (remainingDistanceKm > 0 && segmentIndex < maxAttempts) {
-    // Mevcut menzille gidebileceği maksimum mesafe
-    const safeRangeKm = currentRangeKm * (1 - safetyMarginPercent / 100);
-    const segmentDistanceKm = Math.min(safeRangeKm, remainingDistanceKm);
-    
-    console.log(`📍 Segment ${segmentIndex + 1}:`, {
-      currentBattery: `${currentBatteryPercent.toFixed(1)}%`,
-      currentRange: `${currentRangeKm.toFixed(1)}km`,
-      safeRange: `${safeRangeKm.toFixed(1)}km`,
-      remainingDistance: `${remainingDistanceKm.toFixed(1)}km`,
-      plannedSegment: `${segmentDistanceKm.toFixed(1)}km`
-    });
-    
-    // Bu segmentten sonra şarj gerekli mi?
-    const energyAfterSegment = currentBatteryKWh - (segmentDistanceKm * selectedVehicle.consumption / 100);
-    const batteryAfterSegment = (energyAfterSegment / selectedVehicle.batteryCapacity) * 100;
-    const rangeAfterSegment = (energyAfterSegment * 100) / selectedVehicle.consumption;
-    
-    traveledDistanceKm += segmentDistanceKm;
-    remainingDistanceKm -= segmentDistanceKm;
-    
-    // Segment tamamlandıktan sonra durum güncelle
-    currentBatteryKWh = energyAfterSegment;
-    currentBatteryPercent = batteryAfterSegment;
-    currentRangeKm = rangeAfterSegment;
-    
-    // Hedefe ulaştık mı?
-    if (remainingDistanceKm <= 0) {
-      console.log('🏁 Hedefe ulaşıldı:', {
-        finalBattery: `${currentBatteryPercent.toFixed(1)}%`,
-        targetArrival: `${targetArrivalPercent}%`
-      });
-      break;
-    }
-    
-    // Şarj gerekli mi kontrol et
-    const safetyRangeForNext = remainingDistanceKm * (1 + safetyMarginPercent / 100);
-    
-    if (currentRangeKm < safetyRangeForNext) {
-      console.log(`🔋 Şarj gerekli: Mevcut menzil ${currentRangeKm.toFixed(1)}km, gerekli ${safetyRangeForNext.toFixed(1)}km`);
-      
-      // [5] 🎯 En yakın uygun istasyonu bul
-      const currentPosition = routeData.polylinePoints[Math.floor((traveledDistanceKm / routeDistanceKm) * routeData.polylinePoints.length)] || 
-                             routeData.polylinePoints[0];
-      
-      // Uygun istasyonları filtrele ve skorla
-      console.log(`🔍 İstasyon filtreleme başlıyor: ${chargingStations.length} toplam istasyon`);
-      
+    // Kalan menzil (km)
+    let currentRangeKm = (currentBatteryKWh * 100) / selectedVehicle.consumption;
+    // Bir sonraki segment için güvenli menzil (ör: 1.15x)
+    let safetyRangeForNext = Math.min(currentRangeKm * 0.85, remainingDistanceKm);
+    let nextSegmentDistance = Math.min(safetyRangeForNext, remainingDistanceKm);
+    // Segment için gereken enerji ve SOC
+    let energyNeededKWh = (nextSegmentDistance * selectedVehicle.consumption) / 100;
+    let socNeeded = (energyNeededKWh / selectedVehicle.batteryCapacity) * 100;
+    let socAfterSegment = currentBatteryPercent - socNeeded;
+
+    // [1] Minimum güvenlik eşiği kontrolü
+    if (socAfterSegment < MIN_SOC) {
+      warnings.push(`⚠️ Segment sonunda SOC %${socAfterSegment.toFixed(1)} (<%${MIN_SOC}) olacak. Ek şarj planlanıyor.`);
+      // Uygun istasyon bul
+      const currentPosition = routeData.polylinePoints[Math.floor((traveledDistanceKm / routeDistanceKm) * routeData.polylinePoints.length)] || routeData.polylinePoints[0];
       const notUsedStations = chargingStations.filter(station => !usedStationIds.has(station.ID));
-      console.log(`⚡ Kullanılmamış istasyonlar: ${notUsedStations.length}`);
-      
       const compatibleStations = notUsedStations.filter(station => isStationCompatible(station, selectedVehicle.socketType));
-      console.log(`🔌 Uyumlu istasyonlar: ${compatibleStations.length} (Socket: ${selectedVehicle.socketType})`);
-      
       const availableStations = compatibleStations
         .map(station => ({
           station,
@@ -304,40 +240,16 @@ export function generateChargingPlan({
             currentPosition.longitude
           )
         }))
-        .sort((a, b) => b.score - a.score); // En yüksek skordan düşüğe sırala
-      
-      console.log(`📊 Skorlanmış istasyonlar: ${availableStations.length}`);
-      if (availableStations.length > 0) {
-        console.log(`🏆 En iyi 3 istasyon:`, availableStations.slice(0, 3).map(s => 
-          `${s.station.AddressInfo?.Title} (Skor: ${s.score.toFixed(1)}, Mesafe: ${s.distance.toFixed(1)}km)`
-        ));
-      }
-      
+        .sort((a, b) => b.score - a.score);
       if (availableStations.length === 0) {
         warnings.push('Uygun şarj istasyonu bulunamadı! Alternatif rota önerilir.');
-        console.log('❌ Uygun şarj istasyonu bulunamadı');
         break;
       }
-      
-      const bestStation = availableStations[0];
-      console.log(`🎯 En iyi istasyon seçildi: ${bestStation.station.AddressInfo?.Title} (Skor: ${bestStation.score.toFixed(1)}, Mesafe: ${bestStation.distance.toFixed(1)}km)`);
-      
-      // [6] ⚡ Şarj miktarı ve süresi hesapla
-      const stationPowerKW = Math.max(...(bestStation.station.Connections?.map(conn => conn.PowerKW || 0) || [0]));
-      
-      // Hedef şarj seviyesi hesapla
-      const neededRangeKm = remainingDistanceKm * (1 + safetyMarginPercent / 100);
-      const neededEnergyKWh = (neededRangeKm * selectedVehicle.consumption) / 100;
-      const neededBatteryPercent = (neededEnergyKWh / selectedVehicle.batteryCapacity) * 100;
-      
-      const targetChargePercent = Math.min(
-        maxChargePercent,
-        Math.max(
-          currentBatteryPercent + neededBatteryPercent,
-          80 // Minimum %80'e şarj et
-        )
-      );
-      
+      const bestStation = availableStations[0].station;
+      // Hedef şarj seviyesi %80'i aşmamalı
+      let targetChargePercent = Math.min(MAX_SOC, currentBatteryPercent + socNeeded + 10); // 10% buffer
+      // Şarj miktarı ve süresi hesapla
+      const stationPowerKW = Math.max(...(bestStation.Connections?.map(conn => conn.PowerKW || 0) || [0]));
       const energyToChargeKWh = ((targetChargePercent - currentBatteryPercent) / 100) * selectedVehicle.batteryCapacity;
       const chargingResult = calculateAdvancedChargeTime(
         energyCalc,
@@ -350,14 +262,13 @@ export function generateChargingPlan({
           chargingStrategy: 'balanced'
         }
       );
-      
       // Şarj durağını ekle
       const chargingStop: ChargingStop = {
-        stationId: bestStation.station.ID,
-        name: bestStation.station.AddressInfo?.Title || `İstasyon ${bestStation.station.ID}`,
+        stationId: bestStation.ID,
+        name: bestStation.AddressInfo?.Title || `İstasyon ${bestStation.ID}`,
         stopCoord: {
-          latitude: bestStation.station.AddressInfo?.Latitude || 0,
-          longitude: bestStation.station.AddressInfo?.Longitude || 0
+          latitude: bestStation.AddressInfo?.Latitude || 0,
+          longitude: bestStation.AddressInfo?.Longitude || 0
         },
         distanceFromStartKm: Math.round(traveledDistanceKm),
         batteryBeforeStopPercent: Math.round(currentBatteryPercent),
@@ -374,24 +285,26 @@ export function generateChargingPlan({
           batteryAtSegmentEnd: Math.round(currentBatteryPercent)
         }
       };
-      
       chargingStops.push(chargingStop);
-      usedStationIds.add(bestStation.station.ID);
-      
-      // Durum güncelle
+      usedStationIds.add(bestStation.ID);
+      // Şarj sonrası güncelle
       currentBatteryPercent = targetChargePercent;
       currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
-      currentRangeKm = (currentBatteryKWh * 100) / selectedVehicle.consumption;
-      
-      console.log(`⚡ Şarj durağı eklendi:`, {
-        station: chargingStop.name,
-        distance: `${chargingStop.distanceFromStartKm}km`,
-        batteryChange: `${chargingStop.batteryBeforeStopPercent}% → ${chargingStop.batteryAfterStopPercent}%`,
-        chargeTime: `${chargingStop.estimatedChargeTimeMinutes}dk`,
-        newRange: `${currentRangeKm.toFixed(1)}km`
-      });
+      continue; // segmenti tekrar değerlendir
     }
-    
+
+    // [2] Maksimum şarj sınırı kontrolü
+    if (currentBatteryPercent > MAX_SOC) {
+      currentBatteryPercent = MAX_SOC;
+      currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
+      warnings.push(`ℹ️ Şarj seviyesi %${MAX_SOC}'e kırpıldı (maksimum sınır).`);
+    }
+
+    // [3] Segmenti işle ve ilerle
+    currentBatteryPercent = socAfterSegment;
+    currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
+    traveledDistanceKm += nextSegmentDistance;
+    remainingDistanceKm -= nextSegmentDistance;
     segmentIndex++;
   }
   
