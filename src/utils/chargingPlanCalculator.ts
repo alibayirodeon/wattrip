@@ -262,6 +262,14 @@ export function generateChargingPlan({
           chargingStrategy: 'balanced'
         }
       );
+      // Güvenli değer kontrolleri
+      const safeBatteryBefore = Math.max(0, Math.min(100, Math.round(currentBatteryPercent)));
+      const safeBatteryAfter = Math.max(safeBatteryBefore, Math.min(100, Math.round(targetChargePercent)));
+      const safeEnergyCharged = Math.max(0, Math.round(energyToChargeKWh * 10) / 10);
+      const safeChargeTime = Math.max(0, Math.round(chargingResult.timeMinutes));
+      const safeAvgPower = Math.max(0, Math.round(chargingResult.averagePowerKW * 10) / 10);
+      const safeEfficiency = Math.max(0, Math.round(chargingResult.efficiency));
+
       // Şarj durağını ekle
       const chargingStop: ChargingStop = {
         stationId: bestStation.ID,
@@ -270,25 +278,25 @@ export function generateChargingPlan({
           latitude: bestStation.AddressInfo?.Latitude || 0,
           longitude: bestStation.AddressInfo?.Longitude || 0
         },
-        distanceFromStartKm: Math.round(traveledDistanceKm),
-        batteryBeforeStopPercent: Math.round(currentBatteryPercent),
-        batteryAfterStopPercent: Math.round(targetChargePercent),
-        energyChargedKWh: Math.round(energyToChargeKWh * 10) / 10,
-        estimatedChargeTimeMinutes: chargingResult.timeMinutes,
-        stationPowerKW: Math.round(stationPowerKW),
+        distanceFromStartKm: Math.max(0, Math.round(traveledDistanceKm)),
+        batteryBeforeStopPercent: safeBatteryBefore,
+        batteryAfterStopPercent: safeBatteryAfter,
+        energyChargedKWh: safeEnergyCharged,
+        estimatedChargeTimeMinutes: safeChargeTime,
+        stationPowerKW: Math.max(0, Math.round(stationPowerKW)),
         connectorType: selectedVehicle.socketType,
-        averageChargingPowerKW: Math.round(chargingResult.averagePowerKW * 10) / 10,
-        chargingEfficiency: Math.round(chargingResult.efficiency),
+        averageChargingPowerKW: safeAvgPower,
+        chargingEfficiency: safeEfficiency,
         segmentInfo: {
           segmentIndex: segmentIndex + 1,
-          distanceToNext: remainingDistanceKm,
-          batteryAtSegmentEnd: Math.round(currentBatteryPercent)
+          distanceToNext: Math.max(0, remainingDistanceKm),
+          batteryAtSegmentEnd: safeBatteryAfter
         }
       };
       chargingStops.push(chargingStop);
       usedStationIds.add(bestStation.ID);
       // Şarj sonrası güncelle
-      currentBatteryPercent = targetChargePercent;
+      currentBatteryPercent = safeBatteryAfter;
       currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
       continue; // segmenti tekrar değerlendir
     }
