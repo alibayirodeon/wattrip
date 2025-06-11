@@ -10,6 +10,7 @@ interface RouteCardProps {
   isSelected: boolean;
   onSelect: (index: number) => void;
   routeColors: string[];
+  loading?: boolean;
 }
 
 // Helper functions
@@ -54,7 +55,8 @@ const RouteCard: React.FC<RouteCardProps> = ({
   index,
   isSelected,
   onSelect,
-  routeColors
+  routeColors,
+  loading
 }) => {
   const routeColor = routeColors[index % routeColors.length];
   return (
@@ -166,20 +168,24 @@ const RouteCard: React.FC<RouteCardProps> = ({
         </View>
         {/* Alt bilgi ve buton */}
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 12, paddingTop: 4 }}>
-          <View>
-            <Text style={{ fontSize: 13, color: '#2C3E50', fontWeight: '600' }}>Süre: <Text style={{ fontWeight: 'normal' }}>{formatDuration(route.duration)}</Text></Text>
-            <Text style={{ fontSize: 13, color: '#2C3E50', fontWeight: '600' }}>Enerji: <Text style={{ fontWeight: 'normal' }}>{formatConsumption(evInfo.estimatedConsumption)}</Text></Text>
-            <Text style={{ fontSize: 13, color: '#2C3E50', fontWeight: '600' }}>Şarj: <Text style={{ fontWeight: 'normal' }}>{evInfo.chargingStopsRequired}</Text></Text>
-          </View>
+          {loading ? (
+            <Text style={{ fontSize: 14, color: '#888', fontStyle: 'italic' }}>Hesaplanıyor...</Text>
+          ) : (
+            <View>
+              <Text style={{ fontSize: 13, color: '#2C3E50', fontWeight: '600' }}>Süre: <Text style={{ fontWeight: 'normal' }}>{formatDuration(route.duration)}</Text></Text>
+              <Text style={{ fontSize: 13, color: '#2C3E50', fontWeight: '600' }}>Enerji: <Text style={{ fontWeight: 'normal' }}>{formatConsumption(evInfo.estimatedConsumption)}</Text></Text>
+              <Text style={{ fontSize: 13, color: '#2C3E50', fontWeight: '600' }}>Şarj: <Text style={{ fontWeight: 'normal' }}>{evInfo.chargingStopsRequired}</Text></Text>
+            </View>
+          )}
           <TouchableOpacity
             onPress={() => onSelect(index)}
-            disabled={isSelected}
+            disabled={isSelected || loading}
             style={{
               backgroundColor: isSelected ? '#4CAF50' : routeColor,
               paddingVertical: 8,
               paddingHorizontal: 18,
               borderRadius: 20,
-              opacity: isSelected ? 0.7 : 1
+              opacity: isSelected || loading ? 0.7 : 1
             }}
           >
             <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 15 }}>

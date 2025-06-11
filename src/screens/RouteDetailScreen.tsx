@@ -132,6 +132,9 @@ export default function RouteDetailScreen() {
     segments: any[];
   } | null>(null);
 
+  const [routePlans, setRoutePlans] = useState<ChargingPlanResult[]>([]);
+  const [plansLoading, setPlansLoading] = useState(false);
+
   /**
    * 🧠 Test: Yeni Rota Planlama Fonksiyonu
    */
@@ -722,6 +725,28 @@ export default function RouteDetailScreen() {
     }
   };
 
+  // Her rota için gerçek şarj planı hesapla
+  useEffect(() => {
+    if (!routes || routes.length === 0 || chargingStations.length === 0) {
+      setRoutePlans([]);
+      return;
+    }
+    setPlansLoading(true);
+    Promise.all(
+      routes.map(route => {
+        const routeData = { distance: route.distance, polylinePoints: route.polylinePoints };
+        return generateChargingPlan({
+          selectedVehicle: selectedVehicle!,
+          routeData,
+          chargingStations
+        });
+      })
+    ).then(plans => {
+      setRoutePlans(plans);
+      setPlansLoading(false);
+    });
+  }, [routes, chargingStations, selectedVehicle]);
+
   // Loading state
   if (loading || loadingRoutes) {
     return (
@@ -1038,11 +1063,22 @@ export default function RouteDetailScreen() {
                   renderItem={({ item, index }) => (
                     <RouteCard
                       route={item}
-                      evInfo={routeEVInfo[index]}
+                      evInfo={routePlans[index] ? {
+                        estimatedConsumption: routePlans[index].totalEnergyConsumedKWh,
+                        estimatedCost: 0, // maliyet hesaplanıyorsa ekle
+                        chargingStopsRequired: routePlans[index].chargingStops.length,
+                        remainingBatteryAtDestination: routePlans[index].batteryAtDestinationPercent
+                      } : {
+                        estimatedConsumption: 0,
+                        estimatedCost: 0,
+                        chargingStopsRequired: 0,
+                        remainingBatteryAtDestination: 0
+                      }}
                       index={index}
                       isSelected={localSelectedRouteIndex === index}
                       onSelect={handleRouteSelect}
                       routeColors={routeColors}
+                      loading={plansLoading || !routePlans[index]}
                     />
                   )}
                   contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 }}
