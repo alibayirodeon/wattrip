@@ -1242,7 +1242,11 @@ export default function RouteDetailScreen() {
                 />
                 <View style={{ backgroundColor: '#fff', borderRadius: 12, margin: 10, padding: 10, elevation: 2 }}>
                   <Text style={{ fontSize: 17, fontWeight: 'bold', marginBottom: 8, color: '#1976D2' }}>🔌 Şarj Durakları Planı</Text>
-                  {chargingPlan.chargingStops.length === 0 ? (
+                  {chargingPlan.canReachDestination === false ? (
+                    <Text style={{ color: '#D32F2F', fontWeight: 'bold', fontSize: 15 }}>
+                      Bu yolculuk mevcut batarya ile tamamlanamaz, şarj gereklidir!
+                    </Text>
+                  ) : chargingPlan.chargingStops.length === 0 ? (
                     <Text style={{ color: '#888', fontStyle: 'italic' }}>Bu yolculukta şarj durağı gerekmiyor.</Text>
                   ) : (
                     chargingPlan.chargingStops.map((stop, i) => (
