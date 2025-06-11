@@ -1051,124 +1051,19 @@ export default function RouteDetailScreen() {
                   data={routes}
                   horizontal
                   showsHorizontalScrollIndicator={false}
-                  keyExtractor={(_, index) => index.toString()}
-                  contentContainerStyle={{ paddingLeft: 16 }}
-                  renderItem={({ item, index }) => {
-                    const isSelected = localSelectedRouteIndex === index;
-                    const routeColor = routeColors[index % routeColors.length];
-                    
-                    return (
-                      <TouchableOpacity
-                        onPress={() => handleRouteSelect(index)}
-                        style={{
-                          marginRight: 12,
-                          backgroundColor: isSelected ? routeColor : 'white',
-                          borderRadius: 16,
-                          padding: 16,
-                          borderWidth: 2,
-                          borderColor: routeColor,
-                          minWidth: 180,
-                          elevation: isSelected ? 6 : 2,
-                          shadowColor: '#000',
-                          shadowOffset: { width: 0, height: 2 },
-                          shadowOpacity: isSelected ? 0.3 : 0.1,
-                          shadowRadius: isSelected ? 6 : 3,
-                        }}
-                      >
-                        <View style={{ 
-                          flexDirection: 'row', 
-                          alignItems: 'center',
-                          marginBottom: 8
-                        }}>
-                          <View style={{
-                            width: 20,
-                            height: 20,
-                            borderRadius: 10,
-                            backgroundColor: routeColor,
-                            marginRight: 8,
-                            borderWidth: isSelected ? 0 : 2,
-                            borderColor: 'white'
-                          }} />
-                          <Text style={{ 
-                            fontSize: 14, 
-                            fontWeight: 'bold',
-                            color: isSelected ? 'white' : '#2C3E50',
-                            flex: 1
-                          }}>
-                            Rota {index + 1}
-                          </Text>
-                        </View>
-                        
-                        <Text style={{ 
-                          fontSize: 16, 
-                          fontWeight: 'bold',
-                          color: isSelected ? 'white' : '#2C3E50',
-                          marginBottom: 4
-                        }}>
-                          {formatDistance(item.distance)}
-                        </Text>
-                        
-                        <View style={{ 
-                          flexDirection: 'row', 
-                          alignItems: 'center',
-                          marginBottom: 8
-                        }}>
-                          <Text style={{ 
-                            fontSize: 14,
-                            color: isSelected ? 'rgba(255,255,255,0.9)' : '#7F8C8D',
-                            marginRight: 8
-                          }}>
-                            {formatDuration(item.duration)}
-                          </Text>
-                          
-                          {/* Time difference indicator like in screenshot */}
-                          {getTimeDifference(index) && (
-                            <View style={{
-                              backgroundColor: isSelected ? 'rgba(255,255,255,0.2)' : '#F8F9FA',
-                              paddingHorizontal: 8,
-                              paddingVertical: 2,
-                              borderRadius: 12,
-                              borderWidth: 1,
-                              borderColor: isSelected ? 'rgba(255,255,255,0.3)' : '#E9ECEF'
-                            }}>
-                              <Text style={{
-                                fontSize: 12,
-                                color: isSelected ? 'rgba(255,255,255,0.9)' : '#6C757D',
-                                fontWeight: '600'
-                              }}>
-                                {getTimeDifference(index)}
-                              </Text>
-                            </View>
-                          )}
-                        </View>
-                        
-                        <Text style={{ 
-                          fontSize: 12,
-                          color: isSelected ? 'rgba(255,255,255,0.8)' : '#95A5A6',
-                          fontStyle: 'italic'
-                        }}>
-                          {item.summary}
-                        </Text>
-                        
-                        {routeEVInfo[index] && (
-                          <View style={{ 
-                            marginTop: 8,
-                            paddingTop: 8,
-                            borderTopWidth: 1,
-                            borderTopColor: isSelected ? 'rgba(255,255,255,0.3)' : '#E8E8E8'
-                          }}>
-                            <Text style={{ 
-                              fontSize: 12,
-                              color: isSelected ? 'rgba(255,255,255,0.9)' : '#27AE60',
-                              fontWeight: '600'
-                            }}>
-                              ⚡ {routeEVInfo[index].estimatedConsumption.toFixed(1)} kWh
-                            </Text>
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                    );
-                  }}
+                  keyExtractor={(_, idx) => `route-card-${idx}`}
+                  renderItem={({ item, index }) => (
+                    <RouteCard
+                      route={item}
+                      evInfo={routeEVInfo[index]}
+                      index={index}
+                      isSelected={localSelectedRouteIndex === index}
+                      onSelect={handleRouteSelect}
+                      routeColors={routeColors}
+                    />
+                  )}
+                  contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 }}
+                  style={{ maxHeight: 180 }}
                 />
                 
                 {/* Yükleme Durumu Göstergesi - ChatGPT önerisi */}

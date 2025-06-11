@@ -9,6 +9,7 @@ interface RouteCardProps {
   index: number;
   isSelected: boolean;
   onSelect: (index: number) => void;
+  routeColors: string[];
 }
 
 // Helper functions
@@ -53,7 +54,9 @@ const RouteCard: React.FC<RouteCardProps> = ({
   index,
   isSelected,
   onSelect,
+  routeColors
 }) => {
+  const routeColor = routeColors[index % routeColors.length];
   return (
     <TouchableOpacity
       onPress={() => onSelect(index)}
@@ -67,96 +70,100 @@ const RouteCard: React.FC<RouteCardProps> = ({
         ]}
         elevation={isSelected ? 5 : 3}
       >
-        <Card.Content style={styles.cardContent}>
-          {/* Route Header */}
-          <View style={styles.headerRow}>
-            <Text style={styles.routeTitle}>
-              Rota {index + 1}
-            </Text>
-            {isSelected && (
-              <Chip
-                mode="flat"
-                style={styles.selectedChip}
-                textStyle={styles.selectedChipText}
-              >
-                Seçili
-              </Chip>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {/* Renkli şerit */}
+          <View style={{ width: 8, height: '100%', backgroundColor: routeColor, borderTopLeftRadius: 16, borderBottomLeftRadius: 16, marginRight: 8 }} />
+          <Card.Content style={[styles.cardContent, { flex: 1 }]}>
+            {/* Route Header */}
+            <View style={styles.headerRow}>
+              <Text style={styles.routeTitle}>
+                Rota {index + 1}
+              </Text>
+              {isSelected && (
+                <Chip
+                  mode="flat"
+                  style={styles.selectedChip}
+                  textStyle={styles.selectedChipText}
+                >
+                  Seçili
+                </Chip>
+              )}
+            </View>
+
+            {/* Route Summary */}
+            {route.summary && (
+              <Text style={styles.routeSummary} numberOfLines={1}>
+                {route.summary}
+              </Text>
             )}
-          </View>
 
-          {/* Route Summary */}
-          {route.summary && (
-            <Text style={styles.routeSummary} numberOfLines={1}>
-              {route.summary}
-            </Text>
-          )}
-
-          {/* Main Stats */}
-          <View style={styles.statsRow}>
-            <View style={styles.statItem}>
-              <Text style={styles.statLabel}>Mesafe</Text>
-              <Text style={styles.statValue}>
-                {formatDistance(route.distance)}
-              </Text>
-            </View>
-            
-            <View style={styles.separator} />
-            
-            <View style={styles.statItem}>
-              <Text style={styles.statLabel}>Süre</Text>
-              <Text style={styles.statValue}>
-                {formatDuration(route.duration)}
-              </Text>
-            </View>
-          </View>
-
-          <Divider style={styles.divider} />
-
-          {/* EV Stats */}
-          <View style={styles.evStatsRow}>
-            <View style={styles.evStatItem}>
-              <Text style={styles.evStatLabel}>Tüketim</Text>
-              <Text style={styles.evStatValue}>
-                {formatConsumption(evInfo.estimatedConsumption)}
-              </Text>
+            {/* Main Stats */}
+            <View style={styles.statsRow}>
+              <View style={styles.statItem}>
+                <Text style={styles.statLabel}>Mesafe</Text>
+                <Text style={styles.statValue}>
+                  {formatDistance(route.distance)}
+                </Text>
+              </View>
+              
+              <View style={styles.separator} />
+              
+              <View style={styles.statItem}>
+                <Text style={styles.statLabel}>Süre</Text>
+                <Text style={styles.statValue}>
+                  {formatDuration(route.duration)}
+                </Text>
+              </View>
             </View>
 
-            <View style={styles.evStatItem}>
-              <Text style={styles.evStatLabel}>Maliyet</Text>
-              <Text style={styles.evStatValue}>
-                {formatCost(evInfo.estimatedCost)}
-              </Text>
-            </View>
-          </View>
+            <Divider style={styles.divider} />
 
-          {/* Charging Info */}
-          <View style={styles.chargingRow}>
-            <Text style={styles.chargingText}>
-              {getChargingStopsText(evInfo.chargingStopsRequired)}
-            </Text>
-            
-            <View style={styles.batteryInfo}>
-              <Text style={styles.batteryLabel}>Kalan batarya:</Text>
-              <Text
-                style={[
-                  styles.batteryValue,
-                  { color: getBatteryColor(evInfo.remainingBatteryAtDestination) }
-                ]}
-              >
-                %{Math.round(evInfo.remainingBatteryAtDestination)}
-              </Text>
-            </View>
-          </View>
+            {/* EV Stats */}
+            <View style={styles.evStatsRow}>
+              <View style={styles.evStatItem}>
+                <Text style={styles.evStatLabel}>Tüketim</Text>
+                <Text style={styles.evStatValue}>
+                  {formatConsumption(evInfo.estimatedConsumption)}
+                </Text>
+              </View>
 
-          {/* Warnings */}
-          {route.warnings && route.warnings.length > 0 && (
-            <View style={styles.warningSection}>
-              <Text style={styles.warningText} numberOfLines={2}>
-                ⚠️ {route.warnings[0]}
-              </Text>
+              <View style={styles.evStatItem}>
+                <Text style={styles.evStatLabel}>Maliyet</Text>
+                <Text style={styles.evStatValue}>
+                  {formatCost(evInfo.estimatedCost)}
+                </Text>
+              </View>
             </View>
-          )}
-        </Card.Content>
+
+            {/* Charging Info */}
+            <View style={styles.chargingRow}>
+              <Text style={styles.chargingText}>
+                {getChargingStopsText(evInfo.chargingStopsRequired)}
+              </Text>
+              
+              <View style={styles.batteryInfo}>
+                <Text style={styles.batteryLabel}>Kalan batarya:</Text>
+                <Text
+                  style={[
+                    styles.batteryValue,
+                    { color: getBatteryColor(evInfo.remainingBatteryAtDestination) }
+                  ]}
+                >
+                  %{Math.round(evInfo.remainingBatteryAtDestination)}
+                </Text>
+              </View>
+            </View>
+
+            {/* Warnings */}
+            {route.warnings && route.warnings.length > 0 && (
+              <View style={styles.warningSection}>
+                <Text style={styles.warningText} numberOfLines={2}>
+                  ⚠️ {route.warnings[0]}
+                </Text>
+              </View>
+            )}
+          </Card.Content>
+        </View>
       </Card>
     </TouchableOpacity>
   );
