@@ -81,6 +81,14 @@ interface RouteInfo {
   polylinePoints: Array<{ latitude: number; longitude: number }>;
 }
 
+// HEX -> RGBA yardımcı fonksiyonu
+const hexToRgba = (hex: string, alpha: number) => {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+};
+
 export default function RouteDetailScreen() {
   const navigation = useNavigation();
   const { 
@@ -840,42 +848,17 @@ export default function RouteDetailScreen() {
           {routes.map((route, index) => {
             const isSelected = localSelectedRouteIndex === index;
             const routeColor = routeColors[index % routeColors.length];
-            // Şarj planı varsa seçili rota haricindeki rotaları %20 opacity ile göster
-            const hasChargingPlan = chargingPlan !== null;
-            const shouldDimRoute = !isSelected && (hasChargingPlan || localSelectedRouteIndex !== null);
-            
+            const polylineColor = isSelected ? routeColor : hexToRgba(routeColor, 0.5);
             return (
-              <React.Fragment key={`route-${index}`}>
-                {/* Gölge */}
-                <Polyline 
-                  coordinates={route.polylinePoints} 
-                  strokeColor={isSelected ? "rgba(0,0,0,0.3)" : (shouldDimRoute ? "rgba(0,0,0,0.06)" : "rgba(0,0,0,0.15)")} 
-                  strokeWidth={isSelected ? 16 : 8}
-                  lineCap="round"
-                  lineJoin="round"
-                  zIndex={800 + index}
-                />
-                {/* Ana çizgi */}
-                <Polyline 
-                  coordinates={route.polylinePoints} 
-                  strokeColor={isSelected ? (routeColor === '#FFFFFF' ? '#FFFFFF' : routeColor) : (shouldDimRoute ? `${routeColor}33` : `${routeColor}80`)} 
-                  strokeWidth={isSelected ? 12 : 4}
-                  lineCap="round"
-                  lineJoin="round"
-                  zIndex={850 + index}
-                />
-                {/* Extra border for white route visibility */}
-                {isSelected && routeColor === '#FFFFFF' && (
-                  <Polyline 
-                    coordinates={route.polylinePoints} 
-                    strokeColor="rgba(0,0,0,0.8)" 
-                    strokeWidth={14}
-                    lineCap="round"
-                    lineJoin="round"
-                    zIndex={840 + index}
-                  />
-                )}
-              </React.Fragment>
+              <Polyline
+                key={`route-polyline-${index}`}
+                coordinates={route.polylinePoints}
+                strokeColor={polylineColor}
+                strokeWidth={isSelected ? 10 : 5}
+                lineCap="round"
+                lineJoin="round"
+                zIndex={850 + index}
+              />
             );
           })}
 
