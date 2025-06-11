@@ -1242,13 +1242,12 @@ export default function RouteDetailScreen() {
                 />
                 <View style={{ backgroundColor: '#fff', borderRadius: 12, margin: 10, padding: 10, elevation: 2 }}>
                   <Text style={{ fontSize: 17, fontWeight: 'bold', marginBottom: 8, color: '#1976D2' }}>🔌 Şarj Durakları Planı</Text>
-                  {chargingPlan.canReachDestination === false ? (
-                    <Text style={{ color: '#D32F2F', fontWeight: 'bold', fontSize: 15 }}>
+                  {chargingPlan.canReachDestination === false && (
+                    <Text style={{ color: '#D32F2F', fontWeight: 'bold', fontSize: 15, marginBottom: 8 }}>
                       Bu yolculuk mevcut batarya ile tamamlanamaz, şarj gereklidir!
                     </Text>
-                  ) : chargingPlan.chargingStops.length === 0 ? (
-                    <Text style={{ color: '#888', fontStyle: 'italic' }}>Bu yolculukta şarj durağı gerekmiyor.</Text>
-                  ) : (
+                  )}
+                  {chargingPlan.chargingStops.length > 0 ? (
                     chargingPlan.chargingStops.map((stop, i) => (
                       <View key={i} style={{ borderBottomWidth: i < chargingPlan.chargingStops.length - 1 ? 1 : 0, borderColor: '#eee', paddingVertical: 10 }}>
                         <Text style={{ fontWeight: 'bold', fontSize: 15 }}>{i + 1}. {stop.name}</Text>
@@ -1259,7 +1258,9 @@ export default function RouteDetailScreen() {
                         <Text style={{ color: '#888', fontSize: 12 }}>Ortalama Güç: {stop.averageChargingPowerKW} kW | Verimlilik: {stop.chargingEfficiency}%</Text>
                       </View>
                     ))
-                  )}
+                  ) : chargingPlan.canReachDestination === true ? (
+                    <Text style={{ color: '#888', fontStyle: 'italic' }}>Bu yolculukta şarj durağı gerekmiyor.</Text>
+                  ) : null}
                 </View>
               </View>
             )}
