@@ -164,6 +164,29 @@ const RouteCard: React.FC<RouteCardProps> = ({
             )}
           </Card.Content>
         </View>
+        {/* Alt bilgi ve buton */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 12, paddingTop: 4 }}>
+          <View>
+            <Text style={{ fontSize: 13, color: '#2C3E50', fontWeight: '600' }}>Süre: <Text style={{ fontWeight: 'normal' }}>{formatDuration(route.duration)}</Text></Text>
+            <Text style={{ fontSize: 13, color: '#2C3E50', fontWeight: '600' }}>Enerji: <Text style={{ fontWeight: 'normal' }}>{formatConsumption(evInfo.estimatedConsumption)}</Text></Text>
+            <Text style={{ fontSize: 13, color: '#2C3E50', fontWeight: '600' }}>Şarj: <Text style={{ fontWeight: 'normal' }}>{evInfo.chargingStopsRequired}</Text></Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => onSelect(index)}
+            disabled={isSelected}
+            style={{
+              backgroundColor: isSelected ? '#4CAF50' : routeColor,
+              paddingVertical: 8,
+              paddingHorizontal: 18,
+              borderRadius: 20,
+              opacity: isSelected ? 0.7 : 1
+            }}
+          >
+            <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 15 }}>
+              {isSelected ? 'Seçili' : 'Bu rotayı seç'}
+            </Text>
+          </TouchableOpacity>
+        </View>
       </Card>
     </TouchableOpacity>
   );
