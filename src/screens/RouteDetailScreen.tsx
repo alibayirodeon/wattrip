@@ -3,6 +3,13 @@ import { View, ScrollView, ActivityIndicator, Alert, TouchableOpacity, FlatList,
 import { Text, Card, Button, Chip, Divider, Title, Paragraph } from 'react-native-paper';
 import MapView, { Polyline, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import { ENV } from '../config/env';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import * as XLSX from 'xlsx';
+import { format } from 'date-fns';
+import { tr } from 'date-fns/locale';
+import RNHTMLtoPDF from 'react-native-html-to-pdf';
+import * as Print from 'expo-print';
 
 import { useLocationStore } from '../context/useLocationStore';
 import { useVehicleStore, useSelectedVehicle } from '../context/useVehicleStore';
@@ -12,7 +19,7 @@ import routeService from '../services/routeService';
 import RouteCard from '../components/RouteCard';
 import ChargingStopCard from '../components/ChargingStopCard';
 import TripSummary from '../components/TripSummary';
-import { generateChargingPlan, ChargingPlanResult, formatChargingPlanForUI, validateChargingPlan } from '../utils/chargingPlanCalculator';
+import { generateChargingPlan, ChargingPlanResult, formatChargingPlanForUI, validateChargingPlan, generateAdvancedChargingPlan } from '../utils/chargingPlanCalculator';
 import { formatDuration } from '../lib/energyUtils';
 
 import { 
@@ -88,6 +95,70 @@ const hexToRgba = (hex: string, alpha: number) => {
   const b = parseInt(hex.slice(5, 7), 16);
   return `rgba(${r},${g},${b},${alpha})`;
 };
+
+// --- YARDIMCI FONKSİYONLAR: Maliyet, Süre, SOC Grafik, Özet Kart ---
+
+// 1. Şarj Maliyet Hesaplama
+export function calculateChargeCost(energyAdded: number, pricePerKWh: number): string {
+  if (typeof energyAdded !== 'number' || typeof pricePerKWh !== 'number') return '₺0';
+  const cost = energyAdded * pricePerKWh;
+  return `₺${cost.toFixed(2)}`;
+}
+
+// 2. Toplam Yolculuk Süresi Hesabı
+function parseTimeToMinutes(time: string): number {
+  const hourMatch = time.match(/(\d+)\s*h/);
+  const minMatch = time.match(/(\d+)\s*min/);
+  const hours = hourMatch ? parseInt(hourMatch[1], 10) : 0;
+  const mins = minMatch ? parseInt(minMatch[1], 10) : 0;
+  return hours * 60 + mins;
+}
+
+export function sumTimes(...times: string[]): string {
+  const totalMins = times.reduce((sum, t) => sum + parseTimeToMinutes(t), 0);
+  const hours = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  return hours > 0 ? `${hours}h ${mins}min` : `${mins}min`;
+}
+
+// 3. SOC Değişim Grafiği Verisi
+export type Segment = {
+  from: string;
+  to: string;
+  startSOC: number; // 0-1 arası
+  endSOC: number;   // 0-1 arası
+};
+
+export type SocGraphPoint = { point: string; SOC: number };
+
+export function generateSocGraph(segments: Segment[]): SocGraphPoint[] {
+  const graph: SocGraphPoint[] = [];
+  if (segments.length === 0) return graph;
+  graph.push({ point: segments[0].from, SOC: Math.round(segments[0].startSOC * 100) });
+  segments.forEach((seg, i) => {
+    graph.push({ point: `${seg.to} (önce)`, SOC: Math.round(seg.endSOC * 100) });
+    if (i < segments.length - 1 && segments[i + 1].startSOC > seg.endSOC) {
+      graph.push({ point: `${seg.to} (sonra)`, SOC: Math.round(segments[i + 1].startSOC * 100) });
+    }
+  });
+  const last = segments[segments.length - 1];
+  graph.push({ point: "Finish", SOC: Math.round(last.endSOC * 100) });
+  return graph;
+}
+
+// 4. Durak Özet Kartı (UI için)
+export type StopSummary = {
+  station: string;
+  socBefore: number; // %
+  socAfter: number;  // %
+  energyAdded: number; // kWh
+  chargeTime: string;  // "26 dk"
+  chargeCost: string;  // "₺259"
+};
+
+export function formatStopSummaryCard(stop: StopSummary): string {
+  return `🛑 ${stop.station} | %${stop.socBefore} → %${stop.socAfter} | ⚡ +${stop.energyAdded} kWh | ⏱️ ${stop.chargeTime} | 💰 ${stop.chargeCost}`;
+}
 
 export default function RouteDetailScreen() {
   const navigation = useNavigation();
@@ -177,7 +248,7 @@ export default function RouteDetailScreen() {
 
       console.log('✅ Route planning completed!');
       console.log(`🏁 Can reach destination: ${result.canReachDestination}`);
-      console.log(`🔋 Final SOC: ${result.finalSOC.toFixed(1)}%`);
+      console.log(`🔋 Final SOC: ${typeof result.finalSOC === 'number' ? result.finalSOC.toFixed(1) : '0.0'}%`);
       console.log(`⚡ Charging stops: ${result.chargingStops.length}`);
       console.log(`⏱️ Total charging time: ${result.totalChargingTime}min`);
 
@@ -185,10 +256,10 @@ export default function RouteDetailScreen() {
         '🧠 Yeni Rota Planlama Testi',
         `✅ Test tamamlandı!\n\n` +
         `🏁 Hedefe ulaşabilir: ${result.canReachDestination ? 'Evet' : 'Hayır'}\n` +
-        `🔋 Final SOC: ${result.finalSOC.toFixed(1)}%\n` +
+        `🔋 Final SOC: ${typeof result.finalSOC === 'number' ? result.finalSOC.toFixed(1) : '0.0'}%\n` +
         `⚡ Şarj durakları: ${result.chargingStops.length}\n` +
         `⏱️ Toplam şarj süresi: ${result.totalChargingTime}dk\n` +
-        `📊 Tüketim: ${result.totalEnergyConsumed.toFixed(1)}kWh`,
+        `📊 Tüketim: ${typeof result.totalEnergyConsumed === 'number' ? result.totalEnergyConsumed.toFixed(1) : '0.0'}kWh`,
         [{ text: 'Tamam' }]
       );
 
@@ -377,48 +448,39 @@ export default function RouteDetailScreen() {
         console.warn('⚠️ Route too short, no charging plan needed');
         setChargingPlan({
           chargingStops: [],
-          totalChargingTimeMinutes: 0,
+          totalChargingTime: 0,
           canReachDestination: true,
-          batteryAtDestinationPercent: 70,
-          totalEnergyConsumedKWh: (routeData.distance / 1000) * (selectedVehicle.consumption / 100),
-          warnings: ['Rota çok kısa, şarj gerekmeyebilir'],
-          segmentDetails: [],
-          chargingEfficiencyStats: {
-            averageChargingPower: 0,
-            totalEnergyCharged: 0,
-            chargingEfficiency: 0
-          }
+          totalEnergyConsumed: (routeData.distance / 1000) * (selectedVehicle.consumption / 100),
+          message: 'Rota çok kısa, şarj gerekmeyebilir',
+          timeline: []
         });
         return;
       }
 
       // Şarj planını hesapla
-      const plan = generateChargingPlan({
+      const plan = generateAdvancedChargingPlan({
         selectedVehicle,
         routeData,
         chargingStations: stations,
-        segmentEnergies
+        segmentEnergies,
+        startChargePercent: 50 // veya dinamik alınabilir
       });
 
       // Yükseklik etkili enerji tüketimini warnings'e ekle (demo amaçlı)
       if (elevationTotalEnergy !== null) {
-        plan.warnings.push(`Yükseklik etkili toplam enerji: ${elevationTotalEnergy.toFixed(2)} kWh`);
+        plan.message = `Yükseklik etkili toplam enerji: ${elevationTotalEnergy.toFixed(2)} kWh`;
       }
 
       setChargingPlan(plan);
       console.log('✅ Charging plan generated:', {
         stops: plan.chargingStops.length,
-        totalTime: `${plan.totalChargingTimeMinutes}min`,
+        totalTime: `${plan.totalChargingTime}min`,
         canReach: plan.canReachDestination,
-        finalBattery: `${plan.batteryAtDestinationPercent}%`,
-        warnings: plan.warnings.length
+        warnings: plan.message ? [plan.message] : [],
       });
 
       // Sadece kritik uyarıları göster
-      const criticalWarnings = plan.warnings.filter(warning => 
-        warning.includes('ulaşım garantilenemiyor') || 
-        warning.includes('istasyon bulunamadı')
-      );
+      const criticalWarnings = plan.message ? [plan.message] : [];
       
       if (criticalWarnings.length > 0) {
         Alert.alert('Önemli Uyarı', criticalWarnings.join('\n\n'), [
@@ -445,17 +507,11 @@ export default function RouteDetailScreen() {
       // Fallback plan oluştur
       const fallbackPlan = {
         chargingStops: [],
-        totalChargingTimeMinutes: 0,
+        totalChargingTime: 0,
         canReachDestination: false,
-        batteryAtDestinationPercent: 0,
-        totalEnergyConsumedKWh: (selectedRoute.distance / 1000) * (selectedVehicle.consumption / 100),
-        warnings: [errorMessage, 'Lütfen manuel olarak planlayın.'],
-        segmentDetails: [],
-        chargingEfficiencyStats: {
-          averageChargingPower: 0,
-          totalEnergyCharged: 0,
-          chargingEfficiency: 0
-        }
+        totalEnergyConsumed: (selectedRoute.distance / 1000) * (selectedVehicle.consumption / 100),
+        message: errorMessage,
+        timeline: []
       };
       
       setChargingPlan(fallbackPlan);
@@ -530,9 +586,9 @@ export default function RouteDetailScreen() {
         mapRef.current?.fitToCoordinates(allPoints, {
           edgePadding: { 
             top: 100, 
-            bottom: showSummary ? 350 : 150, 
-            left: 60, 
-            right: 60 
+            bottom: showSummary ? 350 : 80, 
+            left: 40, 
+            right: 40 
           },
           animated: true,
         });
@@ -609,23 +665,6 @@ export default function RouteDetailScreen() {
     }
     
     return `+${diffMinutes} min`;
-  };
-
-  const handleStartNavigation = () => {
-    if (routes[selectedRouteIndex]) {
-      Alert.alert(
-        'Navigasyon Başlat',
-        `Seçili rota ile navigasyonu başlatmak istiyor musunuz?\n\nRota: ${routes[selectedRouteIndex].summary}\nMesafe: ${formatDistance(routes[selectedRouteIndex].distance)}`,
-        [
-          { text: 'İptal', style: 'cancel' },
-          { text: 'Başlat', style: 'default' }
-        ]
-      );
-    }
-  };
-
-  const handleSaveRoute = () => {
-    Alert.alert('Kaydet', 'Rota favorilere kaydedildi!');
   };
 
   // Charging station helper functions
@@ -795,33 +834,6 @@ export default function RouteDetailScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#f5f7fa' }}>
-      {/* Test Butonu */}
-      <TouchableOpacity
-        style={{
-          position: 'absolute',
-          top: 50,
-          right: 20,
-          backgroundColor: '#4CAF50',
-          padding: 10,
-          borderRadius: 8,
-          zIndex: 1000,
-        }}
-        onPress={async () => {
-          try {
-            const result = await routeService.testAntalyaKorkuteliRoute();
-            Alert.alert(
-              'Test Sonuçları',
-              `Antalya → Korkuteli: ${result.antalyaToKorkuteli.routes.length} rota\n` +
-              `Korkuteli → Antalya: ${result.korkuteliToAntalya.routes.length} rota`
-            );
-          } catch (error: any) {
-            Alert.alert('Hata', 'Test sırasında bir hata oluştu: ' + (error.message || 'Bilinmeyen hata'));
-          }
-        }}
-      >
-        <Text style={{ color: 'white', fontWeight: 'bold' }}>Test Rotası</Text>
-      </TouchableOpacity>
-
       {/* Harita Alanı */}
       <View style={{ flex: showSummary ? 0.55 : 1 }}>
         <MapView
@@ -874,17 +886,30 @@ export default function RouteDetailScreen() {
             const isSelected = localSelectedRouteIndex === index;
             const routeColor = routeColors[index % routeColors.length];
             const polylineColor = isSelected ? routeColor : hexToRgba(routeColor, 0.5);
-            return (
-              <Polyline
-                key={`route-polyline-${index}`}
-                coordinates={route.polylinePoints}
-                strokeColor={polylineColor}
-                strokeWidth={isSelected ? 10 : 5}
-                lineCap="round"
-                lineJoin="round"
-                zIndex={850 + index}
-              />
-            );
+            // Sadece gerçek polyline varsa çiz
+            if (route.polylinePoints.length > 2) {
+              return (
+                <Polyline
+                  key={`route-polyline-${index}`}
+                  coordinates={route.polylinePoints}
+                  strokeColor={polylineColor}
+                  strokeWidth={isSelected ? 10 : 5}
+                  lineCap="round"
+                  lineJoin="round"
+                  zIndex={850 + index}
+                />
+              );
+            } else if (isSelected) {
+              // Eğer seçili rota ve polyline kısa ise uyarı göster
+              return (
+                <View key={`route-polyline-warning-${index}`} style={{ position: 'absolute', top: 60, left: 0, right: 0, alignItems: 'center', zIndex: 2000 }}>
+                  <Text style={{ backgroundColor: '#FFD2D2', color: '#D32F2F', padding: 8, borderRadius: 8, fontWeight: 'bold' }}>
+                    Rota verisi alınamadı, lütfen tekrar deneyin.
+                  </Text>
+                </View>
+              );
+            }
+            return null;
           })}
 
           {/* Başlangıç Marker */}
@@ -984,34 +1009,6 @@ export default function RouteDetailScreen() {
             </Marker>
           ))}
         </MapView>
-
-        {/* Top overlay - Route count info */}
-        {routes.length > 1 && (
-          <View style={{
-            position: 'absolute',
-            top: 60,
-            left: 16,
-            right: 16,
-            zIndex: 1000,
-          }}>
-            <Card style={{ 
-              backgroundColor: 'rgba(255, 255, 255, 0.95)',
-              borderRadius: 12,
-              elevation: 4,
-            }}>
-              <Card.Content style={{ paddingVertical: 12, paddingHorizontal: 16 }}>
-                <Text style={{ 
-                  fontSize: 14, 
-                  fontWeight: '600', 
-                  color: '#2C3E50',
-                  textAlign: 'center'
-                }}>
-                  🛣️ {routes.length} alternatif rota bulundu
-                </Text>
-              </Card.Content>
-            </Card>
-          </View>
-        )}
       </View>
 
       {/* Bottom Section */}
@@ -1064,10 +1061,10 @@ export default function RouteDetailScreen() {
                     <RouteCard
                       route={item}
                       evInfo={routePlans[index] ? {
-                        estimatedConsumption: routePlans[index].totalEnergyConsumedKWh,
+                        estimatedConsumption: routePlans[index].totalEnergyConsumed,
                         estimatedCost: 0, // maliyet hesaplanıyorsa ekle
                         chargingStopsRequired: routePlans[index].chargingStops.length,
-                        remainingBatteryAtDestination: routePlans[index].batteryAtDestinationPercent
+                        remainingBatteryAtDestination: 0
                       } : {
                         estimatedConsumption: 0,
                         estimatedCost: 0,
@@ -1147,48 +1144,6 @@ export default function RouteDetailScreen() {
               </View>
             )}
 
-            {/* Test Button for New Route Planning */}
-            {routes && routes.length > 0 && (
-              <Card style={{ 
-                marginHorizontal: 16, 
-                marginBottom: 12, 
-                backgroundColor: 'white', 
-                elevation: 2, 
-                borderRadius: 12,
-                marginTop: 10 
-              }}>
-                <Card.Content>
-                  <Title style={{ 
-                    fontSize: 18, 
-                    fontWeight: 'bold', 
-                    color: '#2C3E50',
-                    marginBottom: 8
-                  }}>
-                    🧠 Yeni Rota Planlama Testi
-                  </Title>
-                  <Paragraph style={{ 
-                    fontSize: 14, 
-                    color: '#7F8C8D',
-                    marginBottom: 12
-                  }}>
-                    Segment bazlı enerji tüketimi ve otomatik şarj durakları ile gelişmiş planlama testi
-                  </Paragraph>
-                  <Button
-                    mode="contained"
-                    onPress={testNewRoutePlanning}
-                    style={{ 
-                      backgroundColor: '#FF4500',
-                      borderRadius: 8,
-                      marginTop: 10 
-                    }}
-                    icon="test-tube"
-                  >
-                    Yeni Algoritma Testini Çalıştır
-                  </Button>
-                </Card.Content>
-              </Card>
-            )}
-
             {/* Action Buttons */}
             {localSelectedRouteIndex !== null && chargingPlan && (
               <View style={{ 
@@ -1199,7 +1154,7 @@ export default function RouteDetailScreen() {
               }}>
                 <Button 
                   mode="contained" 
-                  onPress={handleStartNavigation}
+                  onPress={handleRunTests}
                   style={{ 
                     flex: 1, 
                     backgroundColor: routeColors[localSelectedRouteIndex % routeColors.length],
@@ -1208,25 +1163,7 @@ export default function RouteDetailScreen() {
                   contentStyle={{ paddingVertical: 4 }}
                 >
                   <Text style={{ color: 'white', fontWeight: 'bold' }}>
-                    🧭 Navigasyonu Başlat
-                  </Text>
-                </Button>
-                
-                <Button 
-                  mode="outlined" 
-                  onPress={handleSaveRoute}
-                  style={{ 
-                    borderColor: routeColors[localSelectedRouteIndex % routeColors.length],
-                    borderRadius: 12,
-                    paddingHorizontal: 8
-                  }}
-                  contentStyle={{ paddingVertical: 4 }}
-                >
-                  <Text style={{ 
-                    color: routeColors[localSelectedRouteIndex % routeColors.length], 
-                    fontWeight: 'bold' 
-                  }}>
-                    💾 Kaydet
+                    🧪 Testleri Çalıştır
                   </Text>
                 </Button>
               </View>
@@ -1235,33 +1172,71 @@ export default function RouteDetailScreen() {
             {/* 🔋 EV Şarj Planı Section */}
             {chargingPlan && (
               <View style={{ marginTop: 10 }}>
-                <TripSummary
-                  chargingPlan={chargingPlan}
-                  routeDistanceKm={selectedRoute?.distance ? selectedRoute.distance / 1000 : 0}
-                  drivingTimeMinutes={selectedRoute?.duration ? Math.round(selectedRoute.duration / 60) : 0}
-                />
-                <View style={{ backgroundColor: '#fff', borderRadius: 12, margin: 10, padding: 10, elevation: 2 }}>
-                  <Text style={{ fontSize: 17, fontWeight: 'bold', marginBottom: 8, color: '#1976D2' }}>🔌 Şarj Durakları Planı</Text>
-                  {chargingPlan.canReachDestination === false && (
-                    <Text style={{ color: '#D32F2F', fontWeight: 'bold', fontSize: 15, marginBottom: 8 }}>
-                      Bu yolculuk mevcut batarya ile tamamlanamaz, şarj gereklidir!
-                    </Text>
+                {/* Yolculuk Özeti */}
+                <View style={{ backgroundColor: '#F5F8FA', borderRadius: 12, margin: 10, padding: 14, elevation: 1 }}>
+                  <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1976D2', marginBottom: 6 }}>🚗 Yolculuk Özeti</Text>
+                  <Text style={{ fontSize: 15, color: '#333' }}>
+                    Toplam Süre: <Text style={{ fontWeight: 'bold' }}>{sumTimes(
+                      `${Math.floor(selectedRoute?.duration ? selectedRoute.duration / 60 : 0)}h ${(selectedRoute?.duration ? Math.round(selectedRoute.duration % 3600 / 60) : 0)}min`,
+                      `${chargingPlan.totalChargingTime}min`
+                    )}</Text>  |
+                    Toplam Mesafe: <Text style={{ fontWeight: 'bold' }}>{selectedRoute?.distance ? (selectedRoute.distance / 1000).toFixed(1) : 0} km</Text>
+                  </Text>
+                  <Text style={{ fontSize: 15, color: '#333', marginTop: 2 }}>
+                    Şarj Süresi: <Text style={{ fontWeight: 'bold' }}>{chargingPlan.chargingStops.reduce((t, s) => t + s.estimatedChargeTimeMinutes, 0)} dk</Text>  |
+                    Şarj Sayısı: <Text style={{ fontWeight: 'bold' }}>{chargingPlan.chargingStops.length}</Text>
+                  </Text>
+                  <Text style={{ fontSize: 15, color: '#333', marginTop: 2 }}>
+                    Toplam Maliyet: <Text style={{ fontWeight: 'bold', color: '#D32F2F' }}>{chargingPlan.totalCost ? `₺${chargingPlan.totalCost.toFixed(2)}` : '-'}</Text>
+                  </Text>
+                  <Text style={{ fontSize: 15, color: '#333', marginTop: 2 }}>
+                    Başlangıç SOC: <Text style={{ fontWeight: 'bold' }}>{chargingPlan.chargingStops.length > 0 ? chargingPlan.chargingStops[0].batteryBeforeStopPercent : 100}%</Text>  |
+                    Varışta Kalan SOC: <Text style={{ fontWeight: 'bold' }}>{chargingPlan.chargingStops.length > 0 ? chargingPlan.chargingStops[chargingPlan.chargingStops.length - 1].batteryAfterStopPercent : 100}%</Text>
+                  </Text>
+                  {/* SOC Değişim Grafiği Dizisi */}
+                  <Text style={{ fontSize: 15, color: '#1976D2', marginTop: 8, fontWeight: 'bold' }}>SOC Değişim Grafiği Verisi:</Text>
+                  <Text style={{ fontSize: 13, color: '#333', marginTop: 2 }}>
+                    {chargingPlan.socGraph ? JSON.stringify(chargingPlan.socGraph) :
+                      JSON.stringify(generateSocGraph(
+                        chargingPlan.chargingStops.map((stop, idx, arr) => ({
+                          from: idx === 0 ? 'Start' : arr[idx - 1].name,
+                          to: stop.name,
+                          startSOC: (stop.batteryBeforeStopPercent || 0) / 100,
+                          endSOC: (stop.batteryAfterStopPercent || 0) / 100
+                        }))
+                      ))}
+                  </Text>
+                  {chargingPlan.message && (
+                    <Text style={{ color: '#D32F2F', fontWeight: 'bold', fontSize: 15, marginTop: 8 }}>{chargingPlan.message}</Text>
                   )}
-                  {chargingPlan.chargingStops.length > 0 ? (
-                    chargingPlan.chargingStops.map((stop, i) => (
-                      <View key={i} style={{ borderBottomWidth: i < chargingPlan.chargingStops.length - 1 ? 1 : 0, borderColor: '#eee', paddingVertical: 10 }}>
-                        <Text style={{ fontWeight: 'bold', fontSize: 15 }}>{i + 1}. {stop.name}</Text>
-                        <Text style={{ color: '#555', fontSize: 13 }}>📍 {stop.distanceFromStartKm} km | Segment {stop.segmentInfo?.segmentIndex || i + 1}</Text>
-                        <Text style={{ color: '#1976D2', fontSize: 13 }}>🔋 {stop.batteryBeforeStopPercent}% → {stop.batteryAfterStopPercent}%</Text>
-                        <Text style={{ color: '#388E3C', fontSize: 13 }}>⚡ +{stop.energyChargedKWh} kWh</Text>
-                        <Text style={{ color: '#555', fontSize: 13 }}>⏱️ {stop.estimatedChargeTimeMinutes} dk | ⚡ {stop.stationPowerKW} kW ({stop.connectorType})</Text>
-                        <Text style={{ color: '#888', fontSize: 12 }}>Ortalama Güç: {stop.averageChargingPowerKW} kW | Verimlilik: {stop.chargingEfficiency}%</Text>
-                      </View>
-                    ))
-                  ) : chargingPlan.canReachDestination === true ? (
-                    <Text style={{ color: '#888', fontStyle: 'italic' }}>Bu yolculukta şarj durağı gerekmiyor.</Text>
-                  ) : null}
                 </View>
+                {/* Şarj Durakları & Segmentler */}
+                {chargingPlan && chargingPlan.chargingStops.length > 0 && (
+                  <View style={{ marginHorizontal: 10, marginBottom: 10 }}>
+                    <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#1976D2', marginBottom: 6 }}>🔌 Şarj Durakları & Segmentler</Text>
+                    {chargingPlan.chargingStops.map((stop, idx) => {
+                      // Fiyatı istasyondan al, yoksa varsayılan 7.99₺
+                      const stationObj = chargingStations.find(s => s.ID === stop.stationId);
+                      const pricePerKWh = (stationObj && ((stationObj as any).pricePerKWh || (stationObj as any).CustomFields?.pricePerKWh || (stationObj as any).price || (stationObj as any).PricePerKWh)) || 7.99;
+                      const cost = calculateChargeCost(stop.energyChargedKWh, pricePerKWh);
+                      const summary = formatStopSummaryCard({
+                        station: stop.name,
+                        socBefore: stop.batteryBeforeStopPercent,
+                        socAfter: stop.batteryAfterStopPercent,
+                        energyAdded: stop.energyChargedKWh,
+                        chargeTime: `${stop.estimatedChargeTimeMinutes} dk`,
+                        chargeCost: cost
+                      });
+                      return (
+                        <Card key={`stop-summary-${idx}`} style={{ marginBottom: 8, backgroundColor: '#F8F9FA', borderRadius: 8 }}>
+                          <Card.Content>
+                            <Text style={{ fontSize: 15, color: '#333', fontWeight: 'bold' }}>{summary}</Text>
+                          </Card.Content>
+                        </Card>
+                      );
+                    })}
+                  </View>
+                )}
               </View>
             )}
 
@@ -1520,15 +1495,6 @@ export default function RouteDetailScreen() {
           ))}
         </View>
       )}
-
-      <View style={styles.buttonContainer}>
-        <TouchableOpacity
-          style={[styles.button, styles.testButton]}
-          onPress={handleRunTests}
-        >
-          <Text style={styles.buttonText}>🧪 Testleri Çalıştır</Text>
-        </TouchableOpacity>
-      </View>
     </View>
   );
 }

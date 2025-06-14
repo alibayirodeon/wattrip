@@ -84,7 +84,7 @@ export function demoAntalyaAdanaRoute(): RoutePlanResult {
   ];
   
   const vehicle = DEMO_VEHICLES.peugeot2008;
-  const startSOC = 85; // %85 başlangıç
+  const startSOC = 50; // %50 başlangıç
   const targetSOC = 15; // %15 minimum varış
   
   const result = planRouteWithCharging(
@@ -98,6 +98,7 @@ export function demoAntalyaAdanaRoute(): RoutePlanResult {
   
   // Sonuçları logla
   console.log('📊 Demo Results:');
+  console.log(`🚗 Araç: ${vehicle.name} | Başlangıç Batarya: %${startSOC}`);
   console.log(`🏁 Can reach destination: ${result.canReachDestination}`);
   console.log(`🔋 Final SOC: ${result.finalSOC.toFixed(1)}%`);
   console.log(`⚡ Charging stops: ${result.chargingStops.length}`);
@@ -134,13 +135,14 @@ export function demoVehicleComparison(): void {
   
   // Aynı rota için farklı araçları test et
   const routeSegments = [100, 150, 120, 180, 157]; // ~707km Antalya-Adana extended
-  const startSOC = 80;
+  const startSOC = 50; // %50 başlangıç
   const targetSOC = 20;
   
   Object.entries(DEMO_VEHICLES).forEach(([key, vehicle]) => {
     console.log(`\n🚗 Testing: ${vehicle.name}`);
     console.log(`   Battery: ${vehicle.batteryCapacity}kWh`);
     console.log(`   Consumption: ${vehicle.consumptionPer100km}kWh/100km`);
+    console.log(`   Initial SOC: ${startSOC}%`);
     
     const result = planRouteWithCharging(
       routeSegments,
@@ -170,7 +172,7 @@ export function demoSOCAnalysis(): void {
   const vehicle = DEMO_VEHICLES.peugeot2008;
   
   // Farklı başlangıç SOC'ları test et
-  const startSOCs = [60, 70, 80, 90];
+  const startSOCs = [30, 40, 50, 60]; // %50 merkezli test aralığı
   const targetSOC = 15;
   
   startSOCs.forEach(startSOC => {

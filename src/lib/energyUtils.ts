@@ -274,9 +274,12 @@ export function planRouteWithCharging(
     warnings.push(`❌ Cannot reach destination! Final SOC: ${currentSOC.toFixed(1)}%, Target: ${targetSOC}%`);
   }
 
+  // Ensure currentSOC is a valid number
+  const finalSOC = typeof currentSOC === 'number' ? currentSOC : 0;
+
   const result: RoutePlanResult = {
     chargingStops,
-    finalSOC: currentSOC,
+    finalSOC,
     canReachDestination,
     totalChargingTime,
     totalEnergyConsumed,
@@ -284,7 +287,7 @@ export function planRouteWithCharging(
   };
 
   console.log(`🏁 Route planning completed:`);
-  console.log(`   Final SOC: ${currentSOC.toFixed(1)}%`);
+  console.log(`   Final SOC: ${finalSOC.toFixed(1)}%`);
   console.log(`   Charging stops: ${chargingStops.length}`);
   console.log(`   Total charging time: ${totalChargingTime}min`);
   console.log(`   Can reach destination: ${canReachDestination}`);

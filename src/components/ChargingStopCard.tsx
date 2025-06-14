@@ -110,6 +110,16 @@ export function ChargingStopCard({ stop, stopNumber, isLast = false }: ChargingS
             </Text>
           </View>
         )}
+
+        {/* Eğim etkisi gösterimi */}
+        {typeof stop.elevationEffectKWh === 'number' && (
+          <View style={styles.detailRow}>
+            <Text style={styles.detailLabel}>⛰️ Eğim etkisi:</Text>
+            <Text style={styles.detailValue}>
+              {stop.elevationEffectKWh >= 0 ? '+' : ''}{stop.elevationEffectKWh.toFixed(2)} kWh
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Connection Line to Next Stop */}

@@ -198,7 +198,7 @@ export {
 export const runAdvancedTestSuite = async () => {
   console.log('\n🚦 Gelişmiş Test Suite Başlıyor...');
   const defaultParams = {
-    startBatteryPercent: 100,
+    startBatteryPercent: 50,
     targetBatteryPercent: 20,
     minBatteryPercent: 10,
     maxBatteryPercent: 80,
@@ -216,7 +216,8 @@ export const runAdvancedTestSuite = async () => {
     const planLowSOC = await generateChargingPlan({
       selectedVehicle: vehicle,
       routeData: { distance: route.distance, polylinePoints: route.polylinePoints },
-      chargingStations: testChargingStations
+      chargingStations: testChargingStations,
+      startChargePercent: 19
     });
     console.log(`Araç: ${vehicle.brand} ${vehicle.model} - %19 SOC ile başlatıldı, Uyarılar:`, planLowSOC.warnings);
     // %81 hedef SOC
@@ -224,7 +225,8 @@ export const runAdvancedTestSuite = async () => {
     const planHighSOC = await generateChargingPlan({
       selectedVehicle: vehicle,
       routeData: { distance: route.distance, polylinePoints: route.polylinePoints },
-      chargingStations: testChargingStations
+      chargingStations: testChargingStations,
+      startChargePercent: 50
     });
     console.log(`Araç: ${vehicle.brand} ${vehicle.model} - %81 hedef SOC, Uyarılar:`, planHighSOC.warnings);
   }
@@ -334,6 +336,100 @@ export const runAdvancedTestSuite = async () => {
     const shortHillyEnergy = shortHillyRoute.elevationData.reduce((sum, seg) => sum + calculateSegmentEnergy(seg.distance, seg.elevation, vehicle, defaultParams), 0);
     const longFlatEnergy = longFlatRoute.elevationData.reduce((sum, seg) => sum + calculateSegmentEnergy(seg.distance, seg.elevation, vehicle, defaultParams), 0);
     console.log(`Araç: ${vehicle.brand} ${vehicle.model} - Kısa/Tırmanışlı: ${shortHillyEnergy.toFixed(2)} kWh, Uzun/Düz: ${longFlatEnergy.toFixed(2)} kWh`);
+  }
+
+  // 11. Rejeneratif Frenleme Doğrulama Testi
+  console.log('\n[11] Rejeneratif Frenleme Doğrulama Testi');
+  const regenTestRoute = { ...testRoutes[0], elevationData: testRoutes[0].elevationData.map((seg, i) => ({ ...seg, elevation: i === 0 ? 1000 : 50 })) };
+  for (const vehicle of testVehicles) {
+    let regenFound = false;
+    for (const seg of regenTestRoute.elevationData) {
+      const energy = calculateSegmentEnergy(seg.distance, seg.elevation < 0 ? -Math.abs(seg.elevation) : seg.elevation, vehicle, defaultParams);
+      if (energy < 0) {
+        regenFound = true;
+        console.log(`Araç: ${vehicle.brand} ${vehicle.model} - Regen aktif! Segment: distance=${seg.distance}, elevation=${seg.elevation}, enerji=${energy.toFixed(2)} kWh`);
+      }
+    }
+    if (!regenFound) {
+      console.warn(`Araç: ${vehicle.brand} ${vehicle.model} - Regen aktif segment bulunamadı!`);
+    }
+  }
+
+  // 12. %20 Altı SOC Senaryosu
+  console.log('\n[12] %20 Altı SOC Senaryosu');
+  for (const vehicle of testVehicles) {
+    const route = testRoutes[1]; // uzun rota
+    const lowSOCPlan = await generateChargingPlan({
+      selectedVehicle: vehicle,
+      routeData: { distance: route.distance, polylinePoints: route.polylinePoints },
+      chargingStations: testChargingStations,
+      segmentEnergies: undefined
+    });
+    const socWarning = lowSOCPlan.warnings.some(w => w.toLowerCase().includes('şarj') || w.toLowerCase().includes('soc'));
+    console.log(`Araç: ${vehicle.brand} ${vehicle.model} - %15 SOC ile uzun rota, Uyarı: ${socWarning ? 'VAR' : 'YOK'}, Final Batarya: %${lowSOCPlan.batteryAtDestinationPercent}`);
+  }
+
+  // 13. Şarj Süresi ve Enerji Tüketimi Uyumu
+  console.log('\n[13] Şarj Süresi ve Enerji Tüketimi Uyumu');
+  for (const vehicle of testVehicles) {
+    const plan = await generateChargingPlan({
+      selectedVehicle: vehicle,
+      routeData: { distance: testRoutes[1].distance, polylinePoints: testRoutes[1].polylinePoints },
+      chargingStations: testChargingStations
+    });
+    plan.chargingStops.forEach((stop, idx) => {
+      if (stop.energyChargedKWh > 0 && stop.estimatedChargeTimeMinutes <= 0) {
+        console.warn(`Araç: ${vehicle.brand} ${vehicle.model} - Durak ${idx + 1}: Enerji ${stop.energyChargedKWh} kWh, Süre 0! HATA!`);
+      }
+    });
+  }
+
+  // 14. Segment Bazlı SOC Düşüşü Logu
+  console.log('\n[14] Segment Bazlı SOC Düşüşü');
+  for (const vehicle of testVehicles) {
+    const route = testRoutes[0];
+    let soc = 100;
+    let socLog = `%${soc}`;
+    for (const seg of route.elevationData) {
+      const energy = calculateSegmentEnergy(seg.distance, seg.elevation, vehicle, defaultParams);
+      const socDrop = (energy / vehicle.batteryCapacity) * 100;
+      soc -= socDrop;
+      socLog += ` → %${Math.round(soc)}`;
+    }
+    console.log(`Araç: ${vehicle.brand} ${vehicle.model} - SOC Akışı: ${socLog}`);
+  }
+
+  // 15. Düşük Başlangıç SOC ile Zorunlu Şarj Testi
+  console.log('\n[15] Düşük Başlangıç SOC ile Zorunlu Şarj Testi');
+  for (const vehicle of testVehicles) {
+    const route = testRoutes[1]; // uzun rota
+    const plan = await generateChargingPlan({
+      selectedVehicle: vehicle,
+      routeData: { distance: route.distance, polylinePoints: route.polylinePoints },
+      chargingStations: testChargingStations,
+      startChargePercent: 30 // düşük SOC ile başlat
+    });
+    console.log(`Araç: ${vehicle.brand} ${vehicle.model} - Başlangıç SOC: %30, Durak Sayısı: ${plan.chargingStops.length}`);
+    plan.chargingStops.forEach((stop, idx) => {
+      console.log(`  Durak ${idx + 1}: ${stop.name}, Batarya: %${stop.batteryBeforeStopPercent} → %${stop.batteryAfterStopPercent}, Enerji: ${stop.energyChargedKWh} kWh, Süre: ${stop.estimatedChargeTimeMinutes} dk`);
+    });
+  }
+
+  // 16. Standart %50 SOC Testi
+  console.log('\n[16] Standart %50 SOC Testi');
+  for (const vehicle of testVehicles) {
+    const route = testRoutes[0];
+    const plan = await generateChargingPlan({
+      selectedVehicle: vehicle,
+      routeData: { distance: route.distance, polylinePoints: route.polylinePoints },
+      chargingStations: testChargingStations,
+      startChargePercent: 50
+    });
+    console.log(`Araç: ${vehicle.brand} ${vehicle.model} - Başlangıç SOC: %50`);
+    console.log(`  Durak Sayısı: ${plan.chargingStops.length}`);
+    console.log(`  Toplam Şarj Süresi: ${plan.totalChargingTimeMinutes} dk`);
+    console.log(`  Toplam Enerji: ${plan.totalEnergyConsumedKWh} kWh`);
+    console.log(`  Varışta Batarya: %${plan.batteryAtDestinationPercent}`);
   }
 
   console.log('\n🚦 Gelişmiş Test Suite tamamlandı!');

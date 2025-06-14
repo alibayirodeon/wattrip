@@ -155,15 +155,6 @@ const RouteCard: React.FC<RouteCardProps> = ({
                 </Text>
               </View>
             </View>
-
-            {/* Warnings */}
-            {route.warnings && route.warnings.length > 0 && (
-              <View style={styles.warningSection}>
-                <Text style={styles.warningText} numberOfLines={2}>
-                  ⚠️ {route.warnings[0]}
-                </Text>
-              </View>
-            )}
           </Card.Content>
         </View>
         {/* Alt bilgi ve buton */}
@@ -314,19 +305,6 @@ const styles = StyleSheet.create({
   batteryValue: {
     fontSize: 13,
     fontWeight: 'bold',
-  },
-  warningSection: {
-    marginTop: 8,
-    padding: 8,
-    backgroundColor: '#FFF3CD',
-    borderRadius: 8,
-    borderLeftWidth: 3,
-    borderLeftColor: '#FFC107',
-  },
-  warningText: {
-    fontSize: 11,
-    color: '#856404',
-    lineHeight: 14,
   },
 });
 

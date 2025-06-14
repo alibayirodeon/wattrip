@@ -22,26 +22,20 @@ const TripSummary: React.FC<TripSummaryProps> = ({ chargingPlan, routeDistanceKm
       </View>
       <View style={styles.row}>
         <Text style={styles.label}>Toplam Enerji:</Text>
-        <Text style={styles.value}>{chargingPlan.totalEnergyConsumedKWh} kWh</Text>
+        <Text style={styles.value}>{typeof chargingPlan.totalEnergyConsumed === 'number' ? chargingPlan.totalEnergyConsumed.toFixed(2) : '-'} kWh</Text>
       </View>
       <View style={styles.row}>
         <Text style={styles.label}>Şarj Süresi:</Text>
-        <Text style={styles.value}>{chargingPlan.totalChargingTimeMinutes} dk</Text>
+        <Text style={styles.value}>{typeof chargingPlan.totalChargingTime === 'number' ? chargingPlan.totalChargingTime.toFixed(0) : '-'} dk</Text>
       </View>
       <View style={styles.row}>
         <Text style={styles.label}>Şarj Durakları:</Text>
         <Text style={styles.value}>{chargingPlan.chargingStops.length} adet</Text>
       </View>
-      <View style={styles.row}>
-        <Text style={styles.label}>Varışta Batarya:</Text>
-        <Text style={styles.value}>{chargingPlan.batteryAtDestinationPercent}%</Text>
-      </View>
-      {chargingPlan.warnings && chargingPlan.warnings.length > 0 && (
+      {chargingPlan.message && (
         <View style={styles.warningBox}>
-          <Text style={styles.warningTitle}>⚠️ Uyarılar:</Text>
-          {chargingPlan.warnings.map((w, i) => (
-            <Text key={i} style={styles.warningText}>{w}</Text>
-          ))}
+          <Text style={styles.warningTitle}>⚠️ Uyarı:</Text>
+          <Text style={styles.warningText}>{chargingPlan.message}</Text>
         </View>
       )}
     </View>

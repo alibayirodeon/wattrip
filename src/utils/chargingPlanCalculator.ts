@@ -3,8 +3,27 @@ import { ChargingStation } from '../services/chargingStationService';
 import { EnergyCalculator, generateBatteryWarnings, calculateTripStats, formatDuration } from '../lib/energyUtils';
 import { calculateSegmentEnergy } from './energyCalculator';
 
+// Add at the top of the file, after imports
+function getLatLng(obj: any): { latitude: number; longitude: number } {
+  if (!obj) throw new Error('No object provided to getLatLng');
+  if ('latitude' in obj && 'longitude' in obj) {
+    return { latitude: obj.latitude, longitude: obj.longitude };
+  }
+  if ('lat' in obj && 'lng' in obj) {
+    return { latitude: obj.lat, longitude: obj.lng };
+  }
+  if ('Latitude' in obj && 'Longitude' in obj) {
+    return { latitude: obj.Latitude, longitude: obj.Longitude };
+  }
+  throw new Error('Object does not have recognizable lat/lng properties');
+}
+
 // Haversine formula - iki koordinat arası mesafe hesaplama (km)
-function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+function calculateDistance(lat1: number | undefined, lon1: number | undefined, lat2: number | undefined, lon2: number | undefined): number {
+  if (
+    typeof lat1 !== 'number' || typeof lon1 !== 'number' ||
+    typeof lat2 !== 'number' || typeof lon2 !== 'number'
+  ) return 0;
   const R = 6371; // Earth radius in km
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
@@ -73,8 +92,8 @@ function calculateStationScore(
   
   // 1. Mesafe skoru (yakın istasyonlar daha yüksek skor) - daha gevşek limit
   const distance = calculateDistance(
-    station.AddressInfo?.Latitude || 0,
-    station.AddressInfo?.Longitude || 0,
+    station.AddressInfo?.Latitude ?? 0,
+    station.AddressInfo?.Longitude ?? 0,
     targetLat,
     targetLon
   );
@@ -122,6 +141,7 @@ export interface ChargingStop {
     distanceToNext?: number;
     batteryAtSegmentEnd?: number;
   };
+  elevationEffectKWh?: number;
 }
 
 export interface RouteData {
@@ -135,21 +155,48 @@ export interface SegmentSOC {
   energy: number;
   socDrop: number;
   socAfter: number;
+  elevationEffectKWh?: number;
+}
+
+export interface TimelineEntry {
+  segmentIndex: number;
+  arrival: string;
+  departure: string;
+  note: string;
+}
+
+interface Route {
+  segments: Array<{
+    start: Location;
+    end: Location;
+    distance: number;
+    duration: number;
+    elevation: number;
+  }>;
+}
+
+interface Location {
+  lat: number;
+  lng: number;
 }
 
 export interface ChargingPlanResult {
-  chargingStops: ChargingStop[];
-  totalChargingTimeMinutes: number;
   canReachDestination: boolean;
-  batteryAtDestinationPercent: number;
-  totalEnergyConsumedKWh: number;
-  warnings: string[];
-  segmentDetails: SegmentSOC[]; // Segment bazlı SOC detayları
-  chargingEfficiencyStats: {
-    averageChargingPower: number;
-    totalEnergyCharged: number;
-    chargingEfficiency: number;
-  };
+  reason?: 'insufficientBattery' | 'noStationsInRange' | 'success';
+  message?: string;
+  nextPossibleStationList?: Array<{
+    station: ChargingStation;
+    distance: number;
+    requiredBattery: number;
+    power: number;
+  }>;
+  chargingStops: ChargingStop[];
+  totalChargingTime: number;
+  totalEnergyConsumed: number;
+  timeline: TimelineEntry[];
+  totalCost?: number;
+  socGraph?: { label: string; SOC: number }[];
+  warnings?: string[];
 }
 
 /**
@@ -164,7 +211,7 @@ export function generateChargingPlan({
   routeData,
   chargingStations,
   segmentEnergies,
-  startChargePercent = 85
+  startChargePercent = 50
 }: {
   selectedVehicle: Vehicle;
   routeData: RouteData;
@@ -177,7 +224,8 @@ export function generateChargingPlan({
     batteryCapacity: `${selectedVehicle.batteryCapacity}kWh`,
     consumption: `${selectedVehicle.consumption}kWh/100km`,
     routeDistance: `${(routeData.distance / 1000).toFixed(1)}km`,
-    availableStations: chargingStations.length
+    availableStations: chargingStations.length,
+    initialSOC: `${startChargePercent}%`
   });
   
   // Sabitler ve başlangıç değerleri
@@ -213,8 +261,22 @@ export function generateChargingPlan({
       );
       const elevation = elevations[i + 1] - elevations[i];
       const params = { speed: 100, temperature: 20, load: 0, isHighway: true };
-      const energy = calculateSegmentEnergy(distance, elevation, selectedVehicle, params);
-      segments.push(energy);
+      const segmentEnergyObj = calculateSegmentEnergyWithElevation(
+        { distance_km: distance, elevation_diff_m: elevation },
+        selectedVehicle,
+        params
+      );
+      const energyForSegment = segmentEnergyObj.total;
+      const elevationEffectKWh = segmentEnergyObj.elevation;
+      segments.push(energyForSegment);
+      segmentDetails.push({
+        segmentIndex: i + 1,
+        distanceKm: distance,
+        energy: energyForSegment,
+        socDrop: (energyForSegment / selectedVehicle.batteryCapacity) * 100,
+        socAfter: currentBatteryPercent - (energyForSegment / selectedVehicle.batteryCapacity) * 100,
+        elevationEffectKWh: typeof elevationEffectKWh === 'number' ? elevationEffectKWh : 0
+      });
     }
   } else {
     segments = [selectedVehicle.consumption * (routeDistanceKm / 100)];
@@ -236,59 +298,55 @@ export function generateChargingPlan({
     const socDropForSegment = (energyForSegment / selectedVehicle.batteryCapacity) * 100;
     const socAfterSegment = currentBatteryPercent - socDropForSegment;
     
-    // Segment detaylarını kaydet
-    segmentDetails.push({
-      segmentIndex: i + 1,
-      distanceKm: segmentDistance,
-      energy: energyForSegment,
-      socDrop: socDropForSegment,
-      socAfter: socAfterSegment
-    });
-    
     // Güvenlik kontrolü
-    if (socAfterSegment < SAFETY_SOC) {
+    if (typeof socAfterSegment === 'number' && socAfterSegment < SAFETY_SOC) {
       warnings.push(`⚠️ Segment ${i + 1} sonunda SOC %${socAfterSegment.toFixed(1)} (<%${SAFETY_SOC}) olacak. Ek şarj planlanıyor.`);
       
       // En uygun şarj istasyonunu bul
       const currentPosition = routeData.polylinePoints ? 
         routeData.polylinePoints[i] : 
-        { latitude: 0, longitude: 0 };
-      
+        { lat: 0, lng: 0 };
+      const currentPos = getLatLng(currentPosition);
       const availableStations = chargingStations
         .filter(station => {
-          if (!station.AddressInfo?.Latitude || !station.AddressInfo?.Longitude) return false;
+          const info = station.AddressInfo;
+          if (!info || typeof info.Latitude !== 'number' || typeof info.Longitude !== 'number') return false;
           if (usedStationIds.has(station.ID)) return false;
-          
+          const stationPos = getLatLng(info);
           const distance = calculateDistance(
-            station.AddressInfo.Latitude,
-            station.AddressInfo.Longitude,
-            currentPosition.latitude,
-            currentPosition.longitude
+            stationPos.latitude,
+            stationPos.longitude,
+            currentPos.latitude,
+            currentPos.longitude
           );
-          
           return distance <= 50; // 50km yarıçap
         })
-        .map(station => ({
-          station,
-          distance: calculateDistance(
-            station.AddressInfo?.Latitude || 0,
-            station.AddressInfo?.Longitude || 0,
-            currentPosition.latitude,
-            currentPosition.longitude
-          )
-        }))
+        .map(station => {
+          const info = station.AddressInfo!;
+          const stationPos = getLatLng(info);
+          const distance = calculateDistance(
+            stationPos.latitude,
+            stationPos.longitude,
+            currentPos.latitude,
+            currentPos.longitude
+          );
+          return { station, distance };
+        })
         .sort((a, b) => a.distance - b.distance);
       
       if (availableStations.length === 0) {
-        const allStations = chargingStations.map(station => ({
-          station,
-          distance: calculateDistance(
-            station.AddressInfo?.Latitude || 0,
-            station.AddressInfo?.Longitude || 0,
-            currentPosition.latitude,
-            currentPosition.longitude
-          )
-        }));
+        const allStations = chargingStations.map(station => {
+          const info = station.AddressInfo;
+          if (!info || typeof info.Latitude !== 'number' || typeof info.Longitude !== 'number') return { station, distance: Infinity };
+          const stationPos = getLatLng(info);
+          const distance = calculateDistance(
+            stationPos.latitude,
+            stationPos.longitude,
+            currentPos.latitude,
+            currentPos.longitude
+          );
+          return { station, distance };
+        });
         if (allStations.length > 0) {
           const nearest = allStations.sort((a, b) => a.distance - b.distance)[0];
           warnings.push(`⚠️ Uygun şarj istasyonu bulunamadı! En yakın istasyon: ${nearest.station.AddressInfo?.Title || 'Bilinmiyor'}, ${nearest.distance.toFixed(1)} km uzakta`);
@@ -307,12 +365,14 @@ export function generateChargingPlan({
             selectedVehicle.batteryCapacity,
             stationPowerKW
           );
+          const nearestInfo = nearest.station.AddressInfo!;
+          const nearestPos = getLatLng(nearestInfo);
           const chargingStop = {
             stationId: nearest.station.ID,
             name: nearest.station.AddressInfo?.Title || `İstasyon ${nearest.station.ID}`,
             stopCoord: {
-              latitude: nearest.station.AddressInfo?.Latitude || 0,
-              longitude: nearest.station.AddressInfo?.Longitude || 0
+              latitude: nearestPos.latitude,
+              longitude: nearestPos.longitude
             },
             distanceFromStartKm: Math.round(traveledDistanceKm + distanceToNearest),
             batteryBeforeStopPercent: Math.round(currentBatteryPercent),
@@ -327,23 +387,27 @@ export function generateChargingPlan({
               segmentIndex: i + 1,
               distanceToNext: Math.max(0, routeDistanceKm - (traveledDistanceKm + distanceToNearest)),
               batteryAtSegmentEnd: Math.round(PREFERRED_SOC)
-            }
+            },
+            elevationEffectKWh: 0
           };
           chargingStops.push(chargingStop);
           warnings.push('Acil şarj planı: En yakın istasyona kadar şarj önerildi. Sonrasında manuel planlama gerekebilir.');
           return {
-            chargingStops,
-            totalChargingTimeMinutes: duration,
             canReachDestination: false,
-            batteryAtDestinationPercent: socAfter,
-            totalEnergyConsumedKWh: totalEnergyNeededKWh + energyNeeded,
-            warnings,
-            segmentDetails,
-            chargingEfficiencyStats: {
-              averageChargingPower: stationPowerKW,
-              totalEnergyCharged: energy,
-              chargingEfficiency: 92
-            }
+            reason: 'insufficientBattery',
+            message: `Bu segmenti geçmek için en az %${Math.ceil((energyNeeded / selectedVehicle.batteryCapacity) * 100)} batarya gereklidir.`,
+            nextPossibleStationList: [
+              {
+                station: nearest.station,
+                distance: distanceToNearest,
+                requiredBattery: Math.ceil((energyNeeded / selectedVehicle.batteryCapacity) * 100),
+                power: Math.max(...(nearest.station.Connections?.map(conn => conn.PowerKW || 0) || [0]))
+              }
+            ],
+            chargingStops,
+            totalChargingTime: duration,
+            totalEnergyConsumed: energyNeeded,
+            timeline: []
           };
         } else {
           warnings.push('Uygun şarj istasyonu bulunamadı! Alternatif rota önerilir.');
@@ -352,7 +416,8 @@ export function generateChargingPlan({
       }
       
       const bestStation = availableStations[0].station;
-      
+      const bestInfo = bestStation.AddressInfo!;
+      const bestPos = getLatLng(bestInfo);
       // Şarj kararı için güvenlik kontrolü
       const projectedSOC = socAfterSegment; // Bu durakta şarj başlangıç SOC'si
       let targetChargePercent = PREFERRED_SOC;
@@ -373,6 +438,10 @@ export function generateChargingPlan({
       );
       
       // Gerçek şarj enerjisi ve süresi hesapla
+      const distanceToStation = calculateDistance(currentPos.latitude, currentPos.longitude, bestPos.latitude, bestPos.longitude);
+      const energyNeeded = (selectedVehicle.consumption / 100) * distanceToStation;
+      const socDrop = (energyNeeded / selectedVehicle.batteryCapacity) * 100;
+      const socAfter = currentBatteryPercent - socDrop;
       const stationPowerKW = Math.max(...(bestStation.Connections?.map(conn => conn.PowerKW || 0) || [0]));
       
       if (needsCharging) {
@@ -389,8 +458,8 @@ export function generateChargingPlan({
           stationId: bestStation.ID,
           name: bestStation.AddressInfo?.Title || `İstasyon ${bestStation.ID}`,
           stopCoord: {
-            latitude: bestStation.AddressInfo?.Latitude || 0,
-            longitude: bestStation.AddressInfo?.Longitude || 0
+            latitude: bestPos.latitude,
+            longitude: bestPos.longitude
           },
           distanceFromStartKm: Math.max(0, Math.round(traveledDistanceKm)),
           batteryBeforeStopPercent: Math.round(projectedSOC),
@@ -405,7 +474,8 @@ export function generateChargingPlan({
             segmentIndex: i + 1,
             distanceToNext: Math.max(0, routeDistanceKm - traveledDistanceKm),
             batteryAtSegmentEnd: Math.round(targetChargePercent)
-          }
+          },
+          elevationEffectKWh: 0
         };
         chargingStops.push(chargingStop);
         usedStationIds.add(bestStation.ID);
@@ -414,20 +484,15 @@ export function generateChargingPlan({
         logChargingStop({
           stopIndex: chargingStops.length,
           stationName: chargingStop.name,
+          stationId: chargingStop.stationId,
           distance: chargingStop.distanceFromStartKm,
           startSOC: chargingStop.batteryBeforeStopPercent,
           endSOC: chargingStop.batteryAfterStopPercent,
           energy: chargingStop.energyChargedKWh,
           duration: chargingStop.estimatedChargeTimeMinutes,
           power: chargingStop.stationPowerKW,
-          efficiency: 0.92
+          efficiency: chargingStop.chargingEfficiency
         });
-        
-        // Şarj sonrası SOC'yi güncelle
-        currentBatteryPercent = targetChargePercent;
-        currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
-      } else {
-        warnings.push(`ℹ️ ${bestStation.AddressInfo?.Title || 'İstasyon'} durağında şarj yapılmadı (Projeksiyon: %${projectedSOC.toFixed(1)}, Hedef: %${targetChargePercent}, Segment Sonu: %${socAfterSegment.toFixed(1)}).`);
       }
       continue;
     }
@@ -451,6 +516,21 @@ export function generateChargingPlan({
     chargingStops.reduce((total, stop) => total + stop.averageChargingPowerKW, 0) / chargingStops.length : 0;
   const overallChargingEfficiency = totalNominalCharging > 0 ? (totalEnergyCharged / totalNominalCharging) * 100 : 0;
   
+  // Zaman çizelgesi için segment sürelerini hazırla
+  // Ortalama hız (km/h) ile tahmini sürüş süresi hesapla
+  const AVERAGE_SPEED_KMH = 70;
+  const timelineSegments = segmentDetails.map((seg, i) => {
+    // Bu segmentte şarj var mı?
+    const stop = chargingStops.find(s => s.segmentInfo?.segmentIndex === seg.segmentIndex);
+    // Sürüş süresi = mesafe / hız
+    const driveDurationMin = seg.distanceKm > 0 ? Math.round((seg.distanceKm / AVERAGE_SPEED_KMH) * 60) : 0;
+    return {
+      driveDurationMin,
+      chargingDurationMin: stop ? stop.estimatedChargeTimeMinutes : 0
+    };
+  });
+  const timeline = createTimeline(timelineSegments);
+  
   console.log('🏁 Şarj planı tamamlandı:', {
     canReachDestination,
     chargingStops: chargingStops.length,
@@ -460,18 +540,12 @@ export function generateChargingPlan({
   });
   
   return {
-    chargingStops,
-    totalChargingTimeMinutes,
     canReachDestination,
-    batteryAtDestinationPercent: Math.round(currentBatteryPercent),
-    totalEnergyConsumedKWh: Math.round(totalEnergyNeededKWh * 10) / 10,
-    warnings,
-    segmentDetails,
-    chargingEfficiencyStats: {
-      averageChargingPower: Math.round(averageChargingPower * 10) / 10,
-      totalEnergyCharged: Math.round(totalEnergyCharged * 10) / 10,
-      chargingEfficiency: Math.round(overallChargingEfficiency)
-    }
+    reason: 'success',
+    chargingStops,
+    totalChargingTime: totalChargingTimeMinutes,
+    totalEnergyConsumed: Math.round(totalEnergyNeededKWh * 10) / 10,
+    timeline
   };
 }
 
@@ -541,11 +615,10 @@ export function formatChargingPlanForUI(plan: ChargingPlanResult) {
   return {
     summary: {
       totalStops: plan.chargingStops.length,
-      totalChargingTime: `${Math.floor(plan.totalChargingTimeMinutes / 60)}s ${plan.totalChargingTimeMinutes % 60}dk`,
+      totalChargingTime: `${Math.floor(plan.totalChargingTime / 60)}s ${plan.totalChargingTime % 60}dk`,
       canReach: plan.canReachDestination,
-      finalBattery: `${plan.batteryAtDestinationPercent}%`,
-      totalEnergy: `${plan.totalEnergyConsumedKWh}kWh`,
-      hasWarnings: plan.warnings.length > 0
+      totalEnergy: `${plan.totalEnergyConsumed}kWh`,
+      hasWarnings: !!plan.message
     },
     stops: plan.chargingStops.map((stop, index) => ({
       number: index + 1,
@@ -557,7 +630,7 @@ export function formatChargingPlanForUI(plan: ChargingPlanResult) {
       connector: stop.connectorType,
       coordinates: stop.stopCoord
     })),
-    warnings: plan.warnings
+    warnings: plan.message ? [plan.message] : []
   };
 }
 
@@ -680,6 +753,7 @@ function calculateCharging(
 function logChargingStop({
   stopIndex,
   stationName,
+  stationId,
   distance,
   startSOC,
   endSOC,
@@ -690,6 +764,7 @@ function logChargingStop({
 }: {
   stopIndex: number;
   stationName: string;
+  stationId: number;
   distance: number;
   startSOC: number;
   endSOC: number;
@@ -698,13 +773,14 @@ function logChargingStop({
   power: number;
   efficiency: number;
 }) {
-  console.log(`  Durak ${stopIndex}: ${stationName}`);
-  console.log(`    Mesafe: ${distance} km`);
-  console.log(`    Batarya: %${startSOC} → %${endSOC}`);
-  console.log(`    Şarj Enerjisi: ${energy} kWh`);
-  console.log(`    Şarj Süresi: ${duration} dakika`);
-  console.log(`    İstasyon Gücü: ${power} kW`);
-  console.log(`    Verimlilik: %${efficiency * 100}`);
+  console.log(`
+🔋 Şarj Durağı #${stopIndex}`);
+  console.log(`  📍 İstasyon: ${stationName} (ID: ${stationId})`);
+  console.log(`  📏 Mesafe: ${distance} km`);
+  console.log(`  🔋 Batarya: %${startSOC} → %${endSOC}`);
+  console.log(`  ⚡ Alınan Enerji: ${energy} kWh (Hedef: %${endSOC})`);
+  console.log(`  ⏱️ Şarj Süresi: ${duration} dakika`);
+  console.log(`  ⚡ İstasyon Gücü: ${power} kW | Verimlilik: %${efficiency * 100}`);
 }
 
 // --- Yardımcı: Şarj gerekliliği kontrolü ---
@@ -718,4 +794,420 @@ function shouldCharge(
   const isLowAfterSegment = estimatedNextSOC < minSafeSOC;
   const notFullEnough = targetSOC - currentSOC > buffer;
   return isLowAfterSegment || notFullEnough;
+}
+
+/**
+ * 🚦 Segment bazlı zaman çizelgesi oluşturur
+ * @param segments { driveDurationMin: number, chargingDurationMin?: number }[]
+ * @param startDate Date (varsayılan: new Date())
+ * @returns { segmentIndex, arrival, departure, note }[]
+ */
+export function createTimeline(
+  segments: { driveDurationMin: number; chargingDurationMin?: number }[],
+  startDate: Date = new Date()
+) {
+  let current = new Date(startDate);
+  return segments.map((seg, i) => {
+    const arrival = new Date(current);
+    let note = 'Şarj yok';
+    if (seg.chargingDurationMin && seg.chargingDurationMin > 0) {
+      note = `${seg.chargingDurationMin} dk şarj`;
+    }
+    // Sürüş süresi ekle
+    current = new Date(current.getTime() + seg.driveDurationMin * 60000);
+    // Şarj süresi ekle (varsa)
+    if (seg.chargingDurationMin && seg.chargingDurationMin > 0) {
+      current = new Date(current.getTime() + seg.chargingDurationMin * 60000);
+    }
+    const departure = new Date(current);
+    return {
+      segmentIndex: i + 1,
+      arrival: arrival.toTimeString().slice(0, 5),
+      departure: departure.toTimeString().slice(0, 5),
+      note
+    };
+  });
+}
+
+// --- Örnek kullanım ---
+// const segments = [
+//   { driveDurationMin: 45, chargingDurationMin: 20 },
+//   { driveDurationMin: 60 },
+//   { driveDurationMin: 30, chargingDurationMin: 15 }
+// ];
+// const timeline = createTimeline(segments);
+// console.log(timeline);
+// Çıktı: [{ segmentIndex, arrival, departure, note }, ...]
+
+export function optimizeChargingPlan(
+  route: Route,
+  vehicle: Vehicle,
+  startChargePercent: number = 50,
+  targetChargePercent: number = 70,
+  maxChargingStops: number = 10,
+  chargingStations: ChargingStation[] = []
+): ChargingPlanResult {
+  const minSOC = 15;
+  const maxSOC = 80;
+  let currentSOC = startChargePercent;
+  let currentPosition = route.segments[0].start;
+  let chargingStops: any[] = [];
+  let canReach = false;
+  let warnings: string[] = [];
+  let socTimeline: { label: string; SOC: number }[] = [{ label: 'Start', SOC: currentSOC }];
+  let totalEnergy = 0;
+  let totalTime = 0;
+  let totalCost = 0;
+  let rejectionReason: 'insufficientBattery' | 'noStationsInRange' | undefined = undefined;
+  let segmentIndex = 0;
+
+  while (!canReach && chargingStops.length < maxChargingStops) {
+    // 1. Kalan menzili ve segmenti hesapla
+    const maxRangeKm = (currentSOC / 100) * vehicle.batteryCapacity / vehicle.consumption * 100;
+    // 2. O menzildeki en uygun istasyonu bul
+    const currentPos = getLatLng(currentPosition);
+    const reachableStations = chargingStations.filter(station => {
+      const dist = calculateDistance(
+        currentPos.latitude,
+        currentPos.longitude,
+        typeof station.AddressInfo?.Latitude === 'number' ? station.AddressInfo.Latitude : 0,
+        typeof station.AddressInfo?.Longitude === 'number' ? station.AddressInfo.Longitude : 0
+      );
+      return dist <= maxRangeKm;
+    });
+    if (reachableStations.length === 0) {
+      // Ulaşılamazsa öneri ve çıkış
+      rejectionReason = 'noStationsInRange';
+      return {
+        canReachDestination: false,
+        reason: 'noStationsInRange',
+        message: 'Menzilde istasyon yok',
+        nextPossibleStationList: chargingStations.slice(0, 3).map(station => ({
+          station,
+          distance: calculateDistance(currentPos.latitude, currentPos.longitude, station.AddressInfo?.Latitude ?? 0, station.AddressInfo?.Longitude ?? 0),
+          requiredBattery: 0,
+          power: Math.max(...(station.Connections?.map(conn => conn.PowerKW || 0) || [0]))
+        })),
+        chargingStops: chargingStops,
+        totalChargingTime: totalTime,
+        totalEnergyConsumed: totalEnergy,
+        timeline: [],
+        totalCost,
+        socGraph: socTimeline,
+        warnings
+      };
+    }
+    // En iyi istasyonu seç (ör: en yakın)
+    const bestStation = reachableStations[0];
+    const lat = typeof bestStation.AddressInfo?.Latitude === 'number' ? bestStation.AddressInfo.Latitude : 0;
+    const lng = typeof bestStation.AddressInfo?.Longitude === 'number' ? bestStation.AddressInfo.Longitude : 0;
+    const distanceToStation = calculateDistance(currentPos.latitude, currentPos.longitude, lat, lng);
+    const energyNeeded = (vehicle.consumption / 100) * distanceToStation;
+    const socDrop = (energyNeeded / vehicle.batteryCapacity) * 100;
+    const segmentEndSOC = currentSOC - socDrop;
+    const driveTime = Math.round((distanceToStation / 70) * 60); // 70 km/h
+    if (segmentEndSOC < minSOC) {
+      warnings.push(`Segment ${segmentIndex + 1} sonunda SOC %${segmentEndSOC.toFixed(1)}'ye düşüyor`);
+    }
+    // Şarj işlemi: hedef SOC %70-80
+    const chargeTargetSOC = Math.min(maxSOC, targetChargePercent + 10);
+    const energyToAdd = vehicle.batteryCapacity * ((chargeTargetSOC - segmentEndSOC) / 100);
+    const powerKW = Math.max(...(bestStation.Connections?.map(conn => conn.PowerKW || 0) || [22]));
+    const chargeTime = Math.round((energyToAdd / (powerKW * 0.92)) * 60); // %92 verimlilik
+    const pricePerKWh = (bestStation && ((bestStation as any).pricePerKWh || (bestStation as any).CustomFields?.pricePerKWh || (bestStation as any).price || (bestStation as any).PricePerKWh)) || 7.99;
+    const stopCost = +(energyToAdd * pricePerKWh).toFixed(2);
+    chargingStops.push({
+      station: bestStation,
+      stationId: bestStation.ID,
+      socBefore: Math.round(segmentEndSOC),
+      socAfter: Math.round(chargeTargetSOC),
+      energyAdded: +energyToAdd.toFixed(2),
+      chargeTime,
+      driveTime,
+      chargeCost: stopCost,
+      pricePerKWh,
+      stopPower: powerKW
+    });
+    socTimeline.push({ label: `Şarj ${chargingStops.length} Öncesi`, SOC: Math.round(segmentEndSOC) });
+    socTimeline.push({ label: `Şarj ${chargingStops.length} Sonrası`, SOC: Math.round(chargeTargetSOC) });
+    totalEnergy += energyToAdd;
+    totalTime += chargeTime + driveTime;
+    totalCost += stopCost;
+    currentSOC = chargeTargetSOC;
+    currentPosition = { lat, lng };
+    segmentIndex++;
+    // Hedefe ulaşım kontrolü (ör: kalan mesafe < 10km ise bitir)
+    const destPos = getLatLng(route.segments[route.segments.length - 1].end);
+    const distanceToDest = calculateDistance(currentPos.latitude, currentPos.longitude, destPos.latitude, destPos.longitude);
+    if (distanceToDest < 10) {
+      canReach = true;
+      socTimeline.push({ label: 'Finish', SOC: Math.round(currentSOC) });
+      break;
+    }
+  }
+  return {
+    canReachDestination: canReach,
+    reason: canReach ? 'success' : (rejectionReason ?? 'insufficientBattery'),
+    message: warnings.join('\n'),
+    chargingStops: chargingStops,
+    totalChargingTime: totalTime,
+    totalEnergyConsumed: totalEnergy,
+    timeline: [],
+    totalCost,
+    socGraph: socTimeline,
+    warnings
+  };
+}
+
+// Segment enerji hesaplamasında düz yol ve eğim etkisini ayır
+function calculateSegmentEnergyWithElevation(segment: any, vehicle: any, params?: any) {
+  // Düz yol tüketimi (kWh)
+  const flatConsumptionKWh = (vehicle.consumption / 100) * segment.distance_km;
+  // Yükselti etkisi (kWh)
+  const mass = vehicle.weight;
+  const g = 9.81;
+  const h = segment.elevation_diff_m;
+  const elevationEnergyKWh = (mass * g * h) / 3_600_000;
+  let elevationEffectKWh = 0;
+  if (h > 0) {
+    elevationEffectKWh = elevationEnergyKWh;
+  } else if (h < 0) {
+    const regenEfficiency = vehicle.regenEfficiency || 0.6;
+    elevationEffectKWh = elevationEnergyKWh * regenEfficiency;
+  }
+  return {
+    total: flatConsumptionKWh + elevationEffectKWh,
+    flat: flatConsumptionKWh,
+    elevation: elevationEffectKWh
+  };
+}
+
+/**
+ * Başlangıç SOC yetersizse en yakın istasyonu plana dahil ederek rota planlar.
+ * 1. İlk istasyona ulaşım kontrolü yapılır.
+ * 2. Ulaşılamıyorsa, en yakın istasyona kadar kısa bir segment ve şarj planı oluşturulur.
+ * 3. Orada %80'e kadar şarj edilir.
+ * 4. Asıl rota, bu istasyondan ve yeni SOC ile tekrar planlanır.
+ * 5. Sonuçta tüm şarj durakları ve segmentler tek bir ChargingPlanResult olarak döner.
+ */
+export function planRouteWithInitialCharging({
+  selectedVehicle,
+  routeData,
+  chargingStations,
+  startChargePercent = 50
+}: {
+  selectedVehicle: Vehicle;
+  routeData: RouteData;
+  chargingStations: ChargingStation[];
+  startChargePercent?: number;
+}): ChargingPlanResult {
+  // 1. İlk istasyona ulaşım kontrolü
+  const SAFETY_MARGIN_KWH = 2;
+  const points = routeData.polylinePoints;
+  if (!points || points.length < 2) {
+    return generateChargingPlan({ selectedVehicle, routeData, chargingStations, startChargePercent });
+  }
+  // İlk istasyonları bul
+  const firstStations = chargingStations
+    .map(station => {
+      const info = station.AddressInfo;
+      const point0 = getLatLng(points[0]);
+      const lat = typeof info?.Latitude === 'number' ? info.Latitude : 0;
+      const lng = typeof info?.Longitude === 'number' ? info.Longitude : 0;
+      const distance = calculateDistance(point0.latitude, point0.longitude, lat, lng);
+      return { station, distance };
+    })
+    .filter((item): item is { station: ChargingStation; distance: number } => !!item)
+    .sort((a, b) => a.distance - b.distance);
+  if (!firstStations.length) {
+    return generateChargingPlan({ selectedVehicle, routeData, chargingStations, startChargePercent });
+  }
+  const firstStation = firstStations[0]!.station;
+  const addressInfo = firstStation.AddressInfo;
+  if (!addressInfo || typeof addressInfo.Latitude !== 'number' || typeof addressInfo.Longitude !== 'number') {
+    return generateChargingPlan({ selectedVehicle, routeData, chargingStations, startChargePercent });
+  }
+  const distanceToFirstStation = firstStations[0]!.distance;
+  const availableEnergy = (startChargePercent / 100) * selectedVehicle.batteryCapacity;
+  const energyNeeded = (selectedVehicle.consumption / 100) * distanceToFirstStation;
+  if (availableEnergy >= energyNeeded + SAFETY_MARGIN_KWH) {
+    // İlk istasyona ulaşılabiliyor, normal planla
+    return generateChargingPlan({ selectedVehicle, routeData, chargingStations, startChargePercent });
+  }
+  // 2. Başlangıç → ilk istasyon segmenti oluştur
+  const segmentToStation = {
+    ...routeData,
+    polylinePoints: [points[0], { latitude: addressInfo.Latitude, longitude: addressInfo.Longitude }],
+    distance: distanceToFirstStation * 1000 // metre
+  };
+  // 3. Bu segment için şarj planı (sadece ilk istasyon)
+  const planToStation = generateChargingPlan({
+    selectedVehicle,
+    routeData: segmentToStation,
+    chargingStations: [firstStation],
+    startChargePercent
+  });
+  // 4. İlk istasyonda %80'e kadar şarj et
+  const newSOC = 80;
+  // 5. Asıl rotayı, bu istasyondan ve yeni SOC ile planla
+  const restOfRoute = {
+    ...routeData,
+    polylinePoints: [{ latitude: addressInfo.Latitude, longitude: addressInfo.Longitude }, ...points.slice(1)],
+    // distance güncellenebilir, ancak segment bazlı enerji hesaplaması varsa polylinePoints yeterli
+  };
+  const planMainRoute = generateChargingPlan({
+    selectedVehicle,
+    routeData: restOfRoute,
+    chargingStations,
+    startChargePercent: newSOC
+  });
+  // 6. Planları birleştir
+  return {
+    canReachDestination: planToStation.canReachDestination && planMainRoute.canReachDestination,
+    reason: planToStation.canReachDestination && planMainRoute.canReachDestination ? 'success' : (planToStation.reason || planMainRoute.reason),
+    chargingStops: [...planToStation.chargingStops, ...planMainRoute.chargingStops],
+    totalChargingTime: planToStation.totalChargingTime + planMainRoute.totalChargingTime,
+    totalEnergyConsumed: planToStation.totalEnergyConsumed + planMainRoute.totalEnergyConsumed,
+    timeline: [...planToStation.timeline, ...planMainRoute.timeline],
+    message: planToStation.canReachDestination ? 'Yola çıkmadan önce ilk istasyonda şarj etmeniz önerilir.' : planToStation.message
+  };
+}
+
+/**
+ * 🚀 Gelişmiş Çoklu Durağa Uyumlu, SOC Güvenlikli, Maliyetli Şarj Planlayıcı (ABRP tarzı)
+ * - 6-10+ durak destekler
+ * - SOC güvenlik eşiği ve segment uyarıları
+ * - Toplam maliyet ve süre hesaplar
+ * - SOC ilerleme dizisi ve özet kart verisi üretir
+ * - Ulaşılamayan segment logic içerir
+ */
+export function generateAdvancedChargingPlan({
+  selectedVehicle,
+  routeData,
+  chargingStations,
+  segmentEnergies,
+  startChargePercent = 50,
+  minSOCThreshold = 15,
+  targetSOC = 80,
+  maxStops = 10,
+  pricePerKWhDefault = 7.99
+}: {
+  selectedVehicle: Vehicle;
+  routeData: RouteData;
+  chargingStations: ChargingStation[];
+  segmentEnergies?: number[];
+  startChargePercent?: number;
+  minSOCThreshold?: number;
+  targetSOC?: number;
+  maxStops?: number;
+  pricePerKWhDefault?: number;
+}): ChargingPlanResult {
+  const batteryCapacity = selectedVehicle.batteryCapacity;
+  const consumption = selectedVehicle.consumption;
+  const totalDistanceKm = routeData.distance / 1000;
+  const segments = segmentEnergies && segmentEnergies.length > 0
+    ? segmentEnergies
+    : [consumption * (totalDistanceKm / 100)];
+
+  let currentSOC = startChargePercent;
+  let traveledDistance = 0;
+  let stops: any[] = [];
+  let warnings: string[] = [];
+  let socGraph: { label: string; SOC: number }[] = [{ label: 'Start', SOC: currentSOC }];
+  let totalCost = 0;
+  let totalTripMinutes = 0;
+  let canReach = true;
+  let rejectionReason: 'insufficientBattery' | 'noStationsInRange' | undefined = undefined;
+
+  for (let i = 0; i < segments.length && stops.length < maxStops; i++) {
+    const segmentDistance = (totalDistanceKm / segments.length);
+    const segmentEnergy = segments[i];
+    const socDrop = (segmentEnergy / batteryCapacity) * 100;
+    const segmentEndSOC = currentSOC - socDrop;
+    const driveTime = Math.round((segmentDistance / 70) * 60); // 70 km/h ortalama hız
+    let chargeTime = 0;
+    let energyAdded = 0;
+    let stopSOCBefore = segmentEndSOC;
+    let stopSOCAfter = segmentEndSOC;
+    let stopCost = 0;
+    let stopName = '';
+    let stopId = 0;
+    let stopPower = 0;
+
+    // SOC güvenlik kontrolü
+    if (segmentEndSOC < minSOCThreshold) {
+      // En yakın istasyonu bul
+      const currentPosition = routeData.polylinePoints ? 
+        routeData.polylinePoints[i] : 
+        { lat: 0, lng: 0 };
+      const currentPos = getLatLng(currentPosition);
+      const reachableStations = chargingStations.filter(station => {
+        const dist = calculateDistance(
+          currentPos.latitude,
+          currentPos.longitude,
+          typeof station.AddressInfo?.Latitude === 'number' ? station.AddressInfo.Latitude : 0,
+          typeof station.AddressInfo?.Longitude === 'number' ? station.AddressInfo.Longitude : 0
+        );
+        return dist < segmentDistance * 1.2; // segment mesafesinin %20 fazlası menzil
+      });
+      if (reachableStations.length === 0) {
+        canReach = false;
+        rejectionReason = 'noStationsInRange';
+        warnings.push(`⚠️ Segment ${i+1}: Batarya çok düşük, menzilde istasyon yok!`);
+        break;
+      }
+      // En yakın istasyonu seç
+      const bestStation = reachableStations[0];
+      stopName = typeof bestStation.AddressInfo?.Title === 'string' ? bestStation.AddressInfo.Title : 'Şarj İstasyonu';
+      stopId = bestStation.ID;
+      stopPower = Math.max(...(bestStation.Connections?.map(conn => conn.PowerKW || 0) || [22]));
+      // Hedef SOC'ye kadar şarj et
+      energyAdded = batteryCapacity * ((targetSOC - segmentEndSOC) / 100);
+      chargeTime = Math.round((energyAdded / (stopPower * 0.92)) * 60); // %92 verimlilik
+      stopSOCBefore = segmentEndSOC;
+      stopSOCAfter = targetSOC;
+      // Fiyatı istasyondan al, yoksa default
+      const pricePerKWh = (bestStation && ((bestStation as any).pricePerKWh || (bestStation as any).CustomFields?.pricePerKWh || (bestStation as any).price || (bestStation as any).PricePerKWh)) || pricePerKWhDefault;
+      stopCost = +(energyAdded * pricePerKWh).toFixed(2);
+      totalCost += stopCost;
+      totalTripMinutes += chargeTime + driveTime;
+      stops.push({
+        station: stopName,
+        stationId: stopId,
+        socBefore: Math.round(stopSOCBefore),
+        socAfter: Math.round(stopSOCAfter),
+        energyAdded: +energyAdded.toFixed(2),
+        chargeTime,
+        chargeCost: stopCost,
+        driveTime,
+        stopPower
+      });
+      socGraph.push({ label: `Stop ${stops.length} (before)`, SOC: Math.round(stopSOCBefore) });
+      socGraph.push({ label: `Stop ${stops.length} (after)`, SOC: Math.round(stopSOCAfter) });
+      currentSOC = targetSOC;
+    } else {
+      // Şarj gerekmez, sadece sürüş
+      totalTripMinutes += driveTime;
+      socGraph.push({ label: `Segment ${i+1} End`, SOC: Math.round(segmentEndSOC) });
+      currentSOC = segmentEndSOC;
+    }
+    traveledDistance += segmentDistance;
+    // Segment sonunda SOC çok düşükse uyarı
+    if (segmentEndSOC < minSOCThreshold) {
+      warnings.push(`⚠️ Segment ${i+1} sonunda SOC çok düşük: %${Math.round(segmentEndSOC)}`);
+    }
+  }
+  // Finish noktası
+  socGraph.push({ label: 'Finish', SOC: Math.round(currentSOC) });
+  return {
+    canReachDestination: canReach,
+    reason: canReach ? 'success' : (rejectionReason ?? 'insufficientBattery'),
+    message: warnings.join('\n'),
+    chargingStops: stops,
+    totalChargingTime: stops.reduce((sum, s) => sum + s.chargeTime, 0),
+    totalEnergyConsumed: stops.reduce((sum, s) => sum + s.energyAdded, 0),
+    timeline: [],
+    totalCost,
+    socGraph
+  };
 } 
