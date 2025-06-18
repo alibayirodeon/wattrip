@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect } from 'react';
-import { View, ScrollView, TouchableOpacity, StyleSheet, SafeAreaView } from 'react-native';
+import { View, ScrollView, TouchableOpacity, SafeAreaView } from 'react-native';
 import { Text, TextInput, Button, Card } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import BottomTabBar from '../components/BottomTabBar';
@@ -9,24 +9,31 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../navigation/types';
 import { shortenAddress } from '../lib/shortenAddress';
+import { styled } from 'nativewind/dist/styled';
+
+const StyledView = styled(View);
+const StyledScrollView = styled(ScrollView);
+const StyledSafeAreaView = styled(SafeAreaView);
+const StyledTouchableOpacity = styled(TouchableOpacity);
+const StyledCard = styled(Card);
+const StyledButton = styled(Button);
+const BaseStyledTextInput = styled(TextInput);
+const StyledTextInput = Object.assign(BaseStyledTextInput, { Icon: TextInput.Icon });
 
 type SegmentSelectorProps = {
   value: number;
   onChange: (v: number) => void;
 };
+
 const SegmentSelector: React.FC<SegmentSelectorProps> = ({ value, onChange }) => (
-  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginVertical: 16 }}>
+  <View className="flex-row items-center justify-center my-4">
     {[0, 1, 2, 3, 4].map(i => (
       <TouchableOpacity
         key={i}
         onPress={() => onChange(i)}
-        style={{
-          width: 18, height: 18, borderRadius: 9, marginHorizontal: 12,
-          borderWidth: 2, borderColor: value === i ? '#2196F3' : '#444',
-          backgroundColor: value === i ? '#111a' : '#222', alignItems: 'center', justifyContent: 'center'
-        }}
+        className={`w-[18px] h-[18px] rounded-full mx-3 border-2 ${value === i ? 'border-blue-500 bg-[#111a]' : 'border-gray-600 bg-gray-800'} items-center justify-center`}
       >
-        {value === i && <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: '#2196F3' }} />}
+        {value === i && <View className="w-[10px] h-[10px] rounded-full bg-blue-500" />}
       </TouchableOpacity>
     ))}
   </View>
@@ -53,134 +60,97 @@ const LocationScreen = () => {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#111' }}>
-      <ScrollView contentContainerStyle={{ flexGrow: 1, paddingBottom: 24 }}>
+    <StyledSafeAreaView className="flex-1 bg-[#111]">
+      <StyledScrollView className="flex-1 pb-6">
         {/* Nereden alanı */}
-        <TouchableOpacity activeOpacity={0.8} onPress={() => goToSearch('from')} style={{ marginTop: 8, marginHorizontal: 16, marginBottom: 8 }}>
-          <TextInput
+        <StyledTouchableOpacity activeOpacity={0.8} onPress={() => goToSearch('from')} className="mt-2 mx-4 mb-2">
+          <StyledTextInput
             mode="outlined"
             placeholder="Nereden?"
             value={shortenAddress(from)}
-            style={{ backgroundColor: '#222', borderRadius: 16, borderWidth: 0, color: '#fff' }}
-            left={<TextInput.Icon icon="map-marker" color="#aaa" />}
+            className="bg-gray-800 rounded-2xl"
+            left={<StyledTextInput.Icon icon="map-marker" color="#aaa" />}
             editable={false}
             pointerEvents="none"
           />
-        </TouchableOpacity>
+        </StyledTouchableOpacity>
         {/* Nereye alanı */}
-        <TouchableOpacity activeOpacity={0.8} onPress={() => goToSearch('to')} style={{ marginHorizontal: 16, marginBottom: 8 }}>
-          <TextInput
+        <StyledTouchableOpacity activeOpacity={0.8} onPress={() => goToSearch('to')} className="mx-4 mb-2">
+          <StyledTextInput
             mode="outlined"
             placeholder="Nereye gitmek istiyorsunuz?"
             value={shortenAddress(to)}
-            style={{ backgroundColor: '#222', borderRadius: 16, borderWidth: 0, color: '#fff' }}
-            left={<TextInput.Icon icon="magnify" color="#aaa" />}
-            right={<TextInput.Icon icon="flash" color="#fff" style={{ backgroundColor: '#222', borderRadius: 12 }} />}
+            className="bg-gray-800 rounded-2xl"
+            left={<StyledTextInput.Icon icon="magnify" color="#aaa" />}
+            right={<StyledTextInput.Icon icon="flash" color="#fff" className="bg-gray-800 rounded-xl" />}
             editable={false}
             pointerEvents="none"
           />
-        </TouchableOpacity>
+        </StyledTouchableOpacity>
         {/* Kısa yol butonları */}
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginHorizontal: 16, marginTop: 12 }}>
-          <Button mode="contained" icon="home" style={styles.shortcutBtn}>Ev olarak ayarla</Button>
-          <Button mode="contained" icon="briefcase" style={styles.shortcutBtn}>İş olarak ayarla</Button>
-          <Button mode="contained" icon="content-copy" style={styles.shortcutBtn}>D</Button>
+        <View className="flex-row justify-between mx-4 mt-3">
+          <StyledButton mode="contained" icon="home" className="rounded-xl bg-gray-800 mx-0.5 min-w-[90px] h-[38px] justify-center">Ev olarak ayarla</StyledButton>
+          <StyledButton mode="contained" icon="briefcase" className="rounded-xl bg-gray-800 mx-0.5 min-w-[90px] h-[38px] justify-center">İş olarak ayarla</StyledButton>
+          <StyledButton mode="contained" icon="content-copy" className="rounded-xl bg-gray-800 mx-0.5 min-w-[90px] h-[38px] justify-center">D</StyledButton>
         </View>
         {/* Araç kartı ve batarya barı */}
-        <Card style={styles.vehicleCard}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Icon name="car" size={28} color="#fff" style={{ marginRight: 10 }} />
+        <StyledCard className="bg-[#181818] rounded-2xl mx-4 mt-5 p-4 border border-gray-800">
+          <View className="flex-row items-center justify-between">
+            <View className="flex-row items-center">
+              <Icon name="car" size={28} color="#fff" className="mr-2" />
               <View>
-                <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 18 }}>Peugeot e-2008 48 kWh</Text>
-                <Text style={{ color: '#aaa', fontSize: 13 }}>Standart</Text>
+                <Text className="text-white font-bold text-lg">Peugeot e-2008 48 kWh</Text>
+                <Text className="text-gray-400 text-xs">Standart</Text>
               </View>
             </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Icon name="battery" size={22} color="#fff" style={{ marginRight: 4 }} />
-              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 18 }}>{startSOC} %</Text>
+            <View className="flex-row items-center">
+              <Icon name="battery" size={22} color="#fff" className="mr-1" />
+              <Text className="text-white font-bold text-lg">{startSOC} %</Text>
             </View>
           </View>
           {/* Batarya barı */}
-          <View style={{ marginTop: 16, marginBottom: 4 }}>
-            <View style={{ height: 8, borderRadius: 4, backgroundColor: '#333', overflow: 'hidden' }}>
-              <View style={{ width: `${startSOC}%`, height: 8, backgroundColor: '#8bc34a' }} />
+          <View className="mt-4 mb-1">
+            <View className="h-2 rounded bg-gray-700 overflow-hidden">
+              <View className={`h-2 bg-green-500`} style={{ width: `${startSOC}%` }} />
             </View>
           </View>
-        </Card>
+        </StyledCard>
         {/* Kaydedilen/Son Planlar */}
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginHorizontal: 16, marginTop: 18 }}>
-          <Button mode="contained" icon="heart-outline" style={styles.planBtn}>Kaydedilen planlar</Button>
-          <Button mode="contained" icon="history" style={styles.planBtn}>Son planlar</Button>
+        <View className="flex-row justify-between mx-4 mt-4">
+          <StyledButton mode="contained" icon="heart-outline" className="rounded-xl bg-gray-800 mx-0.5 min-w-[140px] h-[38px] justify-center">Kaydedilen planlar</StyledButton>
+          <StyledButton mode="contained" icon="history" className="rounded-xl bg-gray-800 mx-0.5 min-w-[140px] h-[38px] justify-center">Son planlar</StyledButton>
         </View>
         {/* Varış şarj durumu sliderı */}
-        <View style={{ marginHorizontal: 16, marginTop: 28 }}>
-          <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16, marginBottom: 8 }}>Varış şarj durumu</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <View style={{ flex: 1 }}>
-              <View style={{ height: 6, backgroundColor: '#333', borderRadius: 3 }}>
-                <View style={{ width: `${arrivalSOC}%`, height: 6, backgroundColor: '#2196F3', borderRadius: 3 }} />
+        <View className="mx-4 mt-7">
+          <Text className="text-white font-bold text-base mb-2">Varış şarj durumu</Text>
+          <View className="flex-row items-center">
+            <View className="flex-1">
+              <View className="h-1.5 bg-gray-700 rounded">
+                <View className={`h-1.5 bg-blue-500 rounded`} style={{ width: `${arrivalSOC}%` }} />
               </View>
             </View>
-            <Text style={{ color: '#fff', marginLeft: 12, fontWeight: 'bold', fontSize: 16 }}>{arrivalSOC} %</Text>
+            <Text className="text-white ml-3 font-bold text-base">{arrivalSOC} %</Text>
           </View>
         </View>
         {/* Şarj durakları segmenti */}
-        <View style={{ marginHorizontal: 16, marginTop: 28 }}>
-          <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16, marginBottom: 8 }}>Şarj Durakları</Text>
+        <View className="mx-4 mt-7">
+          <Text className="text-white font-bold text-base mb-2">Şarj Durakları</Text>
           <SegmentSelector value={segmentPref} onChange={setSegmentPref} />
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginHorizontal: 8 }}>
-            <Text style={{ color: '#aaa', fontSize: 13, width: 80 }}>Az ama uzun dur…</Text>
-            <Text style={{ color: '#2196F3', fontWeight: 'bold', fontSize: 14 }}>En hızlı varış</Text>
-            <Text style={{ color: '#aaa', fontSize: 13, width: 80, textAlign: 'right' }}>Kısa ama çok durak</Text>
+          <View className="flex-row justify-between mx-2">
+            <Text className="text-gray-400 text-xs w-20">Az ama uzun dur…</Text>
+            <Text className="text-blue-500 font-bold text-sm">En hızlı varış</Text>
+            <Text className="text-gray-400 text-xs w-20 text-right">Kısa ama çok durak</Text>
           </View>
         </View>
         {/* Alt butonlar: Solda Temizle, sağda Rota Planla */}
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginHorizontal: 16, marginTop: 28 }}>
-          <Button mode="contained" icon="close" style={styles.bottomBtn} onPress={handleClear}>Temizle</Button>
-          <Button mode="contained" icon="swap-horizontal" style={styles.bottomBtn} onPress={handleRoutePlan}>Rota Planla</Button>
+        <View className="flex-row justify-between mx-4 mt-7">
+          <StyledButton mode="contained" icon="close" className="rounded-xl bg-gray-800 mx-0.5 min-w-[140px] h-[38px] justify-center" onPress={handleClear}>Temizle</StyledButton>
+          <StyledButton mode="contained" icon="swap-horizontal" className="rounded-xl bg-gray-800 mx-0.5 min-w-[140px] h-[38px] justify-center" onPress={handleRoutePlan}>Rota Planla</StyledButton>
         </View>
-      </ScrollView>
+      </StyledScrollView>
       <BottomTabBar currentRoute="Location" />
-    </SafeAreaView>
+    </StyledSafeAreaView>
   );
 };
-
-const styles = StyleSheet.create({
-  shortcutBtn: {
-    borderRadius: 14,
-    backgroundColor: '#222',
-    marginHorizontal: 2,
-    minWidth: 90,
-    height: 38,
-    justifyContent: 'center',
-  },
-  vehicleCard: {
-    backgroundColor: '#181818',
-    borderRadius: 18,
-    marginHorizontal: 16,
-    marginTop: 22,
-    padding: 18,
-    elevation: 2,
-    borderWidth: 1,
-    borderColor: '#222',
-  },
-  planBtn: {
-    borderRadius: 14,
-    backgroundColor: '#222',
-    marginHorizontal: 2,
-    minWidth: 140,
-    height: 38,
-    justifyContent: 'center',
-  },
-  bottomBtn: {
-    borderRadius: 14,
-    backgroundColor: '#222',
-    marginHorizontal: 2,
-    minWidth: 140,
-    height: 38,
-    justifyContent: 'center',
-  },
-});
 
 export default LocationScreen; 

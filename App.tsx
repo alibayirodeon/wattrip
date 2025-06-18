@@ -13,10 +13,11 @@ import * as Location from 'expo-location';
 import { useEffect } from 'react';
 import { Alert } from 'react-native';
 import { useLocationStore } from './src/context/useLocationStore';
+import { withExpoSnack } from 'nativewind';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
-export default function App() {
+function App() {
   const setLastKnownLocation = useLocationStore(s => s.setLastKnownLocation);
   
   useEffect(() => {
@@ -81,3 +82,5 @@ export default function App() {
     </ErrorBoundary>
   );
 }
+
+export default withExpoSnack(App);
