@@ -297,7 +297,7 @@ export function generateChargingPlan({
     const energyForSegment = segmentEnergy;
     const socDropForSegment = (energyForSegment / selectedVehicle.batteryCapacity) * 100;
     const socAfterSegment = currentBatteryPercent - socDropForSegment;
-    
+
     // Güvenlik kontrolü
     if (typeof socAfterSegment === 'number' && socAfterSegment < SAFETY_SOC) {
       warnings.push(`⚠️ Segment ${i + 1} sonunda SOC %${socAfterSegment.toFixed(1)} (<%${SAFETY_SOC}) olacak. Ek şarj planlanıyor.`);
@@ -410,7 +410,7 @@ export function generateChargingPlan({
             timeline: []
           };
         } else {
-          warnings.push('Uygun şarj istasyonu bulunamadı! Alternatif rota önerilir.');
+        warnings.push('Uygun şarj istasyonu bulunamadı! Alternatif rota önerilir.');
         }
         break;
       }
@@ -448,39 +448,39 @@ export function generateChargingPlan({
         // Şarj işlemini projectedSOC'den başlat
         const { energy, duration } = calculateCharging(
           projectedSOC,
-          targetChargePercent,
+        targetChargePercent,
           selectedVehicle.batteryCapacity,
           stationPowerKW
         );
-        
-        // Şarj durağını ekle
-        const chargingStop: ChargingStop = {
-          stationId: bestStation.ID,
-          name: bestStation.AddressInfo?.Title || `İstasyon ${bestStation.ID}`,
-          stopCoord: {
+
+      // Şarj durağını ekle
+      const chargingStop: ChargingStop = {
+        stationId: bestStation.ID,
+        name: bestStation.AddressInfo?.Title || `İstasyon ${bestStation.ID}`,
+        stopCoord: {
             latitude: bestPos.latitude,
             longitude: bestPos.longitude
-          },
-          distanceFromStartKm: Math.max(0, Math.round(traveledDistanceKm)),
+        },
+        distanceFromStartKm: Math.max(0, Math.round(traveledDistanceKm)),
           batteryBeforeStopPercent: Math.round(projectedSOC),
           batteryAfterStopPercent: Math.round(targetChargePercent),
           energyChargedKWh: energy,
           estimatedChargeTimeMinutes: duration,
           stationPowerKW: Math.round(stationPowerKW),
-          connectorType: selectedVehicle.socketType,
+        connectorType: selectedVehicle.socketType,
           averageChargingPowerKW: Math.round(stationPowerKW * 0.92 * 10) / 10,
           chargingEfficiency: 92,
-          segmentInfo: {
+        segmentInfo: {
             segmentIndex: i + 1,
             distanceToNext: Math.max(0, routeDistanceKm - traveledDistanceKm),
             batteryAtSegmentEnd: Math.round(targetChargePercent)
           },
           elevationEffectKWh: 0
-        };
-        chargingStops.push(chargingStop);
-        usedStationIds.add(bestStation.ID);
+      };
+      chargingStops.push(chargingStop);
+      usedStationIds.add(bestStation.ID);
         
-        // Şarj sonrası güncelle
+      // Şarj sonrası güncelle
         logChargingStop({
           stopIndex: chargingStops.length,
           stationName: chargingStop.name,
@@ -496,7 +496,7 @@ export function generateChargingPlan({
       }
       continue;
     }
-    
+
     // Segmenti işle ve ilerle
     currentBatteryPercent = socAfterSegment;
     currentBatteryKWh = (currentBatteryPercent / 100) * selectedVehicle.batteryCapacity;
@@ -510,12 +510,12 @@ export function generateChargingPlan({
   
   // Şarj verimliliği istatistikleri
   const totalEnergyCharged = chargingStops.reduce((total, stop) => total + stop.energyChargedKWh, 0);
-  const totalNominalCharging = chargingStops.reduce((total, stop) =>
+  const totalNominalCharging = chargingStops.reduce((total, stop) => 
     total + (stop.stationPowerKW * (stop.estimatedChargeTimeMinutes / 60)), 0);
-  const averageChargingPower = chargingStops.length > 0 ?
+  const averageChargingPower = chargingStops.length > 0 ? 
     chargingStops.reduce((total, stop) => total + stop.averageChargingPowerKW, 0) / chargingStops.length : 0;
   const overallChargingEfficiency = totalNominalCharging > 0 ? (totalEnergyCharged / totalNominalCharging) * 100 : 0;
-  
+
   // Zaman çizelgesi için segment sürelerini hazırla
   // Ortalama hız (km/h) ile tahmini sürüş süresi hesapla
   const AVERAGE_SPEED_KMH = 70;
@@ -530,7 +530,7 @@ export function generateChargingPlan({
     };
   });
   const timeline = createTimeline(timelineSegments);
-  
+
   console.log('🏁 Şarj planı tamamlandı:', {
     canReachDestination,
     chargingStops: chargingStops.length,
@@ -538,7 +538,7 @@ export function generateChargingPlan({
     totalChargingTime: `${totalChargingTimeMinutes}dk`,
     warnings: warnings.length
   });
-  
+
   return {
     canReachDestination,
     reason: 'success',

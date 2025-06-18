@@ -76,85 +76,85 @@ const RouteCard: React.FC<RouteCardProps> = ({
           {/* Renkli şerit */}
           <View style={{ width: 8, height: '100%', backgroundColor: routeColor, borderTopLeftRadius: 16, borderBottomLeftRadius: 16, marginRight: 8 }} />
           <Card.Content style={[styles.cardContent, { flex: 1 }]}>
-            {/* Route Header */}
-            <View style={styles.headerRow}>
-              <Text style={styles.routeTitle}>
-                Rota {index + 1}
-              </Text>
-              {isSelected && (
-                <Chip
-                  mode="flat"
-                  style={styles.selectedChip}
-                  textStyle={styles.selectedChipText}
-                >
-                  Seçili
-                </Chip>
-              )}
-            </View>
-
-            {/* Route Summary */}
-            {route.summary && (
-              <Text style={styles.routeSummary} numberOfLines={1}>
-                {route.summary}
-              </Text>
+          {/* Route Header */}
+          <View style={styles.headerRow}>
+            <Text style={styles.routeTitle}>
+              Rota {index + 1}
+            </Text>
+            {isSelected && (
+              <Chip
+                mode="flat"
+                style={styles.selectedChip}
+                textStyle={styles.selectedChipText}
+              >
+                Seçili
+              </Chip>
             )}
+          </View>
 
-            {/* Main Stats */}
-            <View style={styles.statsRow}>
-              <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Mesafe</Text>
-                <Text style={styles.statValue}>
-                  {formatDistance(route.distance)}
-                </Text>
-              </View>
-              
-              <View style={styles.separator} />
-              
-              <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Süre</Text>
-                <Text style={styles.statValue}>
-                  {formatDuration(route.duration)}
-                </Text>
-              </View>
-            </View>
+          {/* Route Summary */}
+          {route.summary && (
+            <Text style={styles.routeSummary} numberOfLines={1}>
+              {route.summary}
+            </Text>
+          )}
 
-            <Divider style={styles.divider} />
-
-            {/* EV Stats */}
-            <View style={styles.evStatsRow}>
-              <View style={styles.evStatItem}>
-                <Text style={styles.evStatLabel}>Tüketim</Text>
-                <Text style={styles.evStatValue}>
-                  {formatConsumption(evInfo.estimatedConsumption)}
-                </Text>
-              </View>
-
-              <View style={styles.evStatItem}>
-                <Text style={styles.evStatLabel}>Maliyet</Text>
-                <Text style={styles.evStatValue}>
-                  {formatCost(evInfo.estimatedCost)}
-                </Text>
-              </View>
-            </View>
-
-            {/* Charging Info */}
-            <View style={styles.chargingRow}>
-              <Text style={styles.chargingText}>
-                {getChargingStopsText(evInfo.chargingStopsRequired)}
+          {/* Main Stats */}
+          <View style={styles.statsRow}>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Mesafe</Text>
+              <Text style={styles.statValue}>
+                {formatDistance(route.distance)}
               </Text>
-              
-              <View style={styles.batteryInfo}>
-                <Text style={styles.batteryLabel}>Kalan batarya:</Text>
-                <Text
-                  style={[
-                    styles.batteryValue,
-                    { color: getBatteryColor(evInfo.remainingBatteryAtDestination) }
-                  ]}
-                >
-                  %{Math.round(evInfo.remainingBatteryAtDestination)}
-                </Text>
-              </View>
             </View>
+            
+            <View style={styles.separator} />
+            
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Süre</Text>
+              <Text style={styles.statValue}>
+                {formatDuration(route.duration)}
+              </Text>
+            </View>
+          </View>
+
+          <Divider style={styles.divider} />
+
+          {/* EV Stats */}
+          <View style={styles.evStatsRow}>
+            <View style={styles.evStatItem}>
+              <Text style={styles.evStatLabel}>Tüketim</Text>
+              <Text style={styles.evStatValue}>
+                {formatConsumption(evInfo.estimatedConsumption)}
+              </Text>
+            </View>
+
+            <View style={styles.evStatItem}>
+              <Text style={styles.evStatLabel}>Maliyet</Text>
+              <Text style={styles.evStatValue}>
+                {formatCost(evInfo.estimatedCost)}
+              </Text>
+            </View>
+          </View>
+
+          {/* Charging Info */}
+          <View style={styles.chargingRow}>
+            <Text style={styles.chargingText}>
+              {getChargingStopsText(evInfo.chargingStopsRequired)}
+            </Text>
+            
+            <View style={styles.batteryInfo}>
+              <Text style={styles.batteryLabel}>Kalan batarya:</Text>
+              <Text
+                style={[
+                  styles.batteryValue,
+                  { color: getBatteryColor(evInfo.remainingBatteryAtDestination) }
+                ]}
+              >
+                %{Math.round(evInfo.remainingBatteryAtDestination)}
+              </Text>
+            </View>
+          </View>
           </Card.Content>
         </View>
         {/* Alt bilgi ve buton */}

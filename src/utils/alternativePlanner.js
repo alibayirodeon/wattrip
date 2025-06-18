@@ -167,7 +167,7 @@ var AlternativePlanner = /** @class */ (function () {
             }
             if (needCharge) {
                 // En yakın uygun istasyonu bul
-                const availableStations = stations.filter(s => s !== lastStation);
+                const availableStations = stations.filter(s => s !== lastStation && s.power >= 50);
                 if (availableStations.length === 0) {
                     plan.success = false;
                     plan.warnings.push('Uygun şarj istasyonu bulunamadı');
@@ -189,7 +189,7 @@ var AlternativePlanner = /** @class */ (function () {
                     nextSOCNeed = arrivalTargetSOC;
                 }
                 let targetSOC = Math.max(nextSOCNeed, currentSOC);
-                if (targetSOC > 80) targetSOC = 80; // Bataryayı %80'den fazla doldurma
+                if (targetSOC > 85) targetSOC = 85; // Bataryayı %85'den fazla doldurma
                 const socToCharge = targetSOC - currentSOC;
                 const energyToCharge = (socToCharge / 100) * batteryCapacity;
                 const chargeTime = energyToCharge / (station.power * chargeEfficiency) * 60; // dakika

@@ -11,15 +11,15 @@ interface TripSummaryProps {
 const TripSummary: React.FC<TripSummaryProps> = ({ chargingPlan, routeDistanceKm, drivingTimeMinutes }) => {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>🚗 Yolculuk Özeti</Text>
+        <Text style={styles.title}>🚗 Yolculuk Özeti</Text>
       <View style={styles.row}>
         <Text style={styles.label}>Toplam Mesafe:</Text>
         <Text style={styles.value}>{routeDistanceKm.toFixed(1)} km</Text>
-      </View>
+          </View>
       <View style={styles.row}>
         <Text style={styles.label}>Sürüş Süresi:</Text>
         <Text style={styles.value}>{Math.floor(drivingTimeMinutes / 60)}s {drivingTimeMinutes % 60}dk</Text>
-      </View>
+          </View>
       <View style={styles.row}>
         <Text style={styles.label}>Toplam Enerji:</Text>
         <Text style={styles.value}>{typeof chargingPlan.totalEnergyConsumed === 'number' ? chargingPlan.totalEnergyConsumed.toFixed(2) : '-'} kWh</Text>

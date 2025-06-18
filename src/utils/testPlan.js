@@ -284,3 +284,34 @@ async function testMultipleRealisticRoutesWithTables() {
 if (require.main === module) {
   testMultipleRealisticRoutesWithTables().catch(console.error);
 }
+
+async function testAntalyaIstanbulPlan() {
+  const alternativePlanner = require('./alternativePlanner').AlternativePlanner;
+  const batteryCapacity = 50; // Peugeot e-2008
+  const startSOC = 50;
+  const start = { lat: 36.8841, lng: 30.7056 };
+  const end = { lat: 41.0082, lng: 28.9784 };
+  const plan = await alternativePlanner.generatePlan({
+    startLocation: start,
+    endLocation: end,
+    startSOC,
+    batteryCapacity,
+    maxStops: 10,
+    strategy: 'balanced'
+  });
+  console.log('--- Antalya → İstanbul Şarj Planı ---');
+  if (!plan || !plan.stops || plan.stops.length === 0) {
+    console.log('Plan bulunamadı veya şarj durağı yok.');
+    return;
+  }
+  plan.stops.forEach((stop, i) => {
+    console.log(`#${i+1} ${stop.station}`);
+    console.log(`  SOC: ${stop.arrivalSOC?.toFixed(1)}% → ${stop.chargeToSOC?.toFixed(1)}%`);
+    console.log(`  Enerji: ${stop.energy?.toFixed(2)} kWh, Süre: ${stop.chargeTime?.toFixed(1)} dk, Güç: ${stop.power || '-'} kW, Maliyet: ₺${stop.cost?.toFixed(2)}`);
+    console.log(`  Varış: ${stop.arrivalTime}, Çıkış: ${stop.departureTime}`);
+  });
+  console.log(`Varış SOC: ${plan.finalSOC?.toFixed(1)}%`);
+  console.log(`Toplam süre: ${plan.totalTime?.toFixed(1)} dk`);
+}
+
+testAntalyaIstanbulPlan();
